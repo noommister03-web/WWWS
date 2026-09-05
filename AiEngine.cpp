@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
@@ -40,7 +41,11 @@ AiEngine::AiEngine(
     int timeoutSeconds
 )
     : apiKey_(std::move(apiKey)),
-      baseUrl_(std::move(baseUrl)),
+      baseUrl_(
+          trimTrailingSlash(
+              std::move(baseUrl)
+          )
+      ),
       model_(std::move(model)),
       systemPrompt_(std::move(systemPrompt)),
       timeoutSeconds_(timeoutSeconds) {
@@ -52,7 +57,8 @@ AiEngine::AiEngine(
 
 bool AiEngine::enabled() const {
     return !apiKey_.empty() &&
-           !model_.empty();
+           !model_.empty() &&
+           !baseUrl_.empty();
 }
 
 std::string AiEngine::trimTrailingSlash(
@@ -99,93 +105,70 @@ std::string AiEngine::generateReply(
         return "";
     }
 
-    std::string prompt =
-        systemPrompt_ +
-        "\n\nИстория разговора:\n";
+    json messages = json::array();
 
-    for (const auto& record : history) {
+    messages.push_back({
+        {"role", "system"},
+        {"content", systemPrompt_}
+    });
+
+    const std::size_t maxHistory =
+        std::min<std::size_t>(
+            history.size(),
+            20
+        );
+
+    const std::size_t start =
+        history.size() - maxHistory;
+
+    for (
+        std::size_t i = start;
+        i < history.size();
+        ++i
+    ) {
+        const MessageRecord& record =
+            history[i];
+
         if (record.text.empty()) {
             continue;
         }
 
-        prompt +=
-            record.incoming
-                ? "Пользователь: "
-                : "Ассистент: ";
-
-        prompt +=
-            limitUtf8(
-                record.text,
-                6000
-            );
-
-        prompt += "\n";
+        messages.push_back({
+            {
+                "role",
+                record.incoming
+                    ? "user"
+                    : "assistant"
+            },
+            {
+                "content",
+                limitUtf8(
+                    record.text,
+                    6000
+                )
+            }
+        });
     }
 
-    prompt +=
-        "\nОтветь на последнее сообщение пользователя.";
-
     json request = {
-        {
-            "contents",
-            json::array({
-                {
-                    {
-                        "role",
-                        "user"
-                    },
-                    {
-                        "parts",
-                        json::array({
-                            {
-                                {
-                                    "text",
-                                    prompt
-                                }
-                            }
-                        })
-                    }
-                }
-            })
-        },
-        {
-            "generationConfig",
-            {
-                {
-                    "temperature",
-                    0.7
-                }
-            }
-        }
+        {"model", model_},
+        {"messages", messages},
+        {"temperature", 0.7}
     };
 
     CURL* curl = curl_easy_init();
 
     if (!curl) {
         throw std::runtime_error(
-            "Unable to initialize CURL for Gemini"
+            "Unable to initialize CURL for AI"
         );
     }
 
     std::string responseBody;
 
-    std::string model = model_;
-
-    if (
-        model.rfind(
-            "models/",
-            0
-        ) == 0
-    ) {
-        model =
-            model.substr(7);
-    }
-
     const std::string url =
-        "https://generativelanguage.googleapis.com/"
-        "v1beta/models/" +
-        model +
-        ":generateContent";
+        baseUrl_ +
+        "/chat/completions";
 
     const std::string requestBody =
         request.dump();
@@ -197,13 +180,23 @@ std::string AiEngine::generateReply(
         "Content-Type: application/json"
     );
 
-    const std::string apiKeyHeader =
-        "x-goog-api-key: " +
+    const std::string authHeader =
+        "Authorization: Bearer " +
         apiKey_;
 
     headers = curl_slist_append(
         headers,
-        apiKeyHeader.c_str()
+        authHeader.c_str()
+    );
+
+    headers = curl_slist_append(
+        headers,
+        "HTTP-Referer: https://openrouter.ai/"
+    );
+
+    headers = curl_slist_append(
+        headers,
+        "X-Title: Telegram CRM"
     );
 
     curl_easy_setopt(
@@ -227,9 +220,7 @@ std::string AiEngine::generateReply(
     curl_easy_setopt(
         curl,
         CURLOPT_POSTFIELDSIZE,
-        static_cast<long>(
-            requestBody.size()
-        )
+        static_cast<long>(requestBody.size())
     );
 
     curl_easy_setopt(
@@ -276,35 +267,11 @@ std::string AiEngine::generateReply(
         1L
     );
 
-    /*
-     * Force HTTP/1.1.
-     * This avoids HTTP/2 framing problems that can occur
-     * with some proxy/network combinations.
-     */
     curl_easy_setopt(
         curl,
         CURLOPT_HTTP_VERSION,
         CURL_HTTP_VERSION_1_1
     );
-
-    /*
-     * Disable the Expect: 100-continue handshake.
-     * Some intermediary proxies handle this poorly.
-     */
-    headers = curl_slist_append(
-        headers,
-        "Expect:"
-    );
-
-    curl_easy_setopt(
-        curl,
-        CURLOPT_HTTPHEADER,
-        headers
-    );
-
-    std::cerr
-        << "Gemini connection test: starting request..."
-        << std::endl;
 
     const CURLcode result =
         curl_easy_perform(curl);
@@ -317,36 +284,13 @@ std::string AiEngine::generateReply(
         &httpCode
     );
 
-    long httpVersion = 0;
-
-    curl_easy_getinfo(
-        curl,
-        CURLINFO_HTTP_VERSION,
-        &httpVersion
-    );
-
-    std::cerr
-        << "Gemini connection test: CURL result = "
-        << static_cast<int>(result)
-        << std::endl;
-
-    std::cerr
-        << "Gemini connection test: HTTP code = "
-        << httpCode
-        << std::endl;
-
-    std::cerr
-        << "Gemini connection test: HTTP version = "
-        << httpVersion
-        << std::endl;
-
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
     if (result != CURLE_OK) {
         throw std::runtime_error(
             std::string(
-                "Gemini network error: "
+                "AI network error: "
             ) +
             curl_easy_strerror(result)
         );
@@ -357,14 +301,14 @@ std::string AiEngine::generateReply(
         httpCode >= 300
     ) {
         std::cerr
-            << "Gemini API returned HTTP "
+            << "OpenRouter API returned HTTP "
             << httpCode
             << ": "
             << responseBody
             << std::endl;
 
         throw std::runtime_error(
-            "Gemini API request failed"
+            "OpenRouter API request failed"
         );
     }
 
@@ -373,57 +317,45 @@ std::string AiEngine::generateReply(
             json::parse(responseBody);
 
         if (
-            !response.contains("candidates") ||
-            !response["candidates"].is_array() ||
-            response["candidates"].empty()
+            !response.contains("choices") ||
+            !response["choices"].is_array() ||
+            response["choices"].empty()
         ) {
             throw std::runtime_error(
-                "Gemini response has no candidates"
+                "AI response has no choices"
             );
         }
 
-        const auto& candidate =
-            response["candidates"][0];
+        const auto& choice =
+            response["choices"][0];
 
         if (
-            !candidate.contains("content") ||
-            !candidate["content"].is_object()
+            !choice.contains("message") ||
+            !choice["message"].is_object()
         ) {
             throw std::runtime_error(
-                "Gemini response has no content"
+                "AI response has no message"
             );
         }
 
-        const auto& content =
-            candidate["content"];
+        const auto& message =
+            choice["message"];
 
         if (
-            !content.contains("parts") ||
-            !content["parts"].is_array()
+            !message.contains("content") ||
+            !message["content"].is_string()
         ) {
             throw std::runtime_error(
-                "Gemini response has no parts"
+                "AI response has no content"
             );
         }
 
-        std::string reply;
-
-        for (
-            const auto& part :
-            content["parts"]
-        ) {
-            if (
-                part.contains("text") &&
-                part["text"].is_string()
-            ) {
-                reply +=
-                    part["text"].get<std::string>();
-            }
-        }
+        std::string reply =
+            message["content"].get<std::string>();
 
         if (reply.empty()) {
             throw std::runtime_error(
-                "Gemini returned an empty reply"
+                "AI returned an empty reply"
             );
         }
 
@@ -432,16 +364,14 @@ std::string AiEngine::generateReply(
             4096
         );
 
-    } catch (
-        const json::exception& error
-    ) {
+    } catch (const json::exception& error) {
         std::cerr
-            << "Gemini JSON parse error: "
+            << "AI JSON parse error: "
             << error.what()
             << std::endl;
 
         throw std::runtime_error(
-            "Unable to parse Gemini response"
+            "Unable to parse AI response"
         );
     }
 }
