@@ -99,8 +99,6 @@ std::string AiEngine::generateReply(
         return "";
     }
 
-    json contents = json::array();
-
     std::string prompt =
         systemPrompt_ +
         "\n\nИстория разговора:\n";
@@ -127,28 +125,28 @@ std::string AiEngine::generateReply(
     prompt +=
         "\nОтветь на последнее сообщение пользователя.";
 
-    contents.push_back({
-        {
-            "role",
-            "user"
-        },
-        {
-            "parts",
-            json::array({
-                {
-                    {
-                        "text",
-                        prompt
-                    }
-                }
-            })
-        }
-    });
-
     json request = {
         {
             "contents",
-            contents
+            json::array({
+                {
+                    {
+                        "role",
+                        "user"
+                    },
+                    {
+                        "parts",
+                        json::array({
+                            {
+                                {
+                                    "text",
+                                    prompt
+                                }
+                            }
+                        })
+                    }
+                }
+            })
         },
         {
             "generationConfig",
@@ -171,33 +169,47 @@ std::string AiEngine::generateReply(
 
     std::string responseBody;
 
-    const std::string model =
-        model_.rfind("models/", 0) == 0
-            ? model_
-            : "models/" + model_;
+    std::string model = model_;
+
+    if (
+        model.rfind(
+            "models/",
+            0
+        ) == 0
+    ) {
+        model =
+            model.substr(
+                7
+            );
+    }
 
     const std::string url =
-        "https://generativelanguage.googleapis.com/v1beta/" +
+        "https://generativelanguage.googleapis.com/"
+        "v1beta/models/" +
         model +
         ":generateContent";
 
     const std::string requestBody =
         request.dump();
 
-    struct curl_slist* headers = nullptr;
+    struct curl_slist* headers =
+        nullptr;
 
-    headers = curl_slist_append(
-        headers,
-        "Content-Type: application/json"
-    );
+    headers =
+        curl_slist_append(
+            headers,
+            "Content-Type: application/json"
+        );
 
     const std::string apiKeyHeader =
-        "x-goog-api-key: " + apiKey_;
+        "x-goog-api-key: " +
+        apiKey_;
 
-    headers = curl_slist_append(
-        headers,
-        apiKeyHeader.c_str()
-    );
+    headers =
+        curl_slist_append(
+            headers,
+            apiKeyHeader.c_str()
+        );
 
     curl_easy_setopt(
         curl,
@@ -269,6 +281,12 @@ std::string AiEngine::generateReply(
         1L
     );
 
+    curl_easy_setopt(
+        curl,
+        CURLOPT_HTTP_VERSION,
+        CURL_HTTP_VERSION_1_1
+    );
+
     const CURLcode result =
         curl_easy_perform(curl);
 
@@ -313,7 +331,9 @@ std::string AiEngine::generateReply(
             json::parse(responseBody);
 
         if (
-            !response.contains("candidates") ||
+            !response.contains(
+                "candidates"
+            ) ||
             !response["candidates"].is_array() ||
             response["candidates"].empty()
         ) {
@@ -334,12 +354,12 @@ std::string AiEngine::generateReply(
             );
         }
 
-        const auto& responseContent =
+        const auto& content =
             candidate["content"];
 
         if (
-            !responseContent.contains("parts") ||
-            !responseContent["parts"].is_array()
+            !content.contains("parts") ||
+            !content["parts"].is_array()
         ) {
             throw std::runtime_error(
                 "Gemini response has no parts"
@@ -350,14 +370,16 @@ std::string AiEngine::generateReply(
 
         for (
             const auto& part :
-            responseContent["parts"]
+            content["parts"]
         ) {
             if (
                 part.contains("text") &&
                 part["text"].is_string()
             ) {
                 reply +=
-                    part["text"].get<std::string>();
+                    part["text"].get<
+                        std::string
+                    >();
             }
         }
 
