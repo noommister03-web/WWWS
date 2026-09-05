@@ -220,7 +220,9 @@ std::string AiEngine::generateReply(
     curl_easy_setopt(
         curl,
         CURLOPT_POSTFIELDSIZE,
-        static_cast<long>(requestBody.size())
+        static_cast<long>(
+            requestBody.size()
+        )
     );
 
     curl_easy_setopt(
