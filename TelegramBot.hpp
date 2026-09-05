@@ -5,6 +5,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 struct IncomingMessage {
     long long updateId = 0;
@@ -13,6 +14,17 @@ struct IncomingMessage {
     std::string senderId;
     std::string username;
     std::string text;
+};
+
+struct CallbackQuery {
+    long long updateId = 0;
+    std::string id;
+
+    long long chatId = 0;
+    long long senderId = 0;
+
+    std::string username;
+    std::string data;
 };
 
 enum class SendStatus {
@@ -26,6 +38,9 @@ public:
     using MessageHandler =
         std::function<bool(const IncomingMessage&)>;
 
+    using CallbackHandler =
+        std::function<bool(const CallbackQuery&)>;
+
     TelegramBot(
         std::string token,
         int pollTimeout,
@@ -34,6 +49,10 @@ public:
 
     void setMessageHandler(
         MessageHandler handler
+    );
+
+    void setCallbackHandler(
+        CallbackHandler handler
     );
 
     void setStopChecker(
@@ -47,6 +66,20 @@ public:
     SendStatus sendMessage(
         long long chatId,
         const std::string& text
+    );
+
+    SendStatus sendMessageWithKeyboard(
+        long long chatId,
+        const std::string& text,
+        const std::vector<
+            std::vector<
+                std::pair<std::string, std::string>
+            >
+        >& buttons
+    );
+
+    bool answerCallbackQuery(
+        const std::string& callbackQueryId
     );
 
 private:
@@ -63,6 +96,8 @@ private:
     bool privateChatsOnly_;
 
     MessageHandler handler_;
+
+    CallbackHandler callbackHandler_;
 
     std::function<bool()> stopChecker_;
 
@@ -92,7 +127,8 @@ private:
 
     SendStatus sendSingleMessage(
         long long chatId,
-        const std::string& text
+        const std::string& text,
+        const std::string& replyMarkup = ""
     );
 
     static std::string urlEncode(
@@ -102,5 +138,13 @@ private:
     static std::string limitUtf8(
         const std::string& text,
         std::size_t maxBytes
+    );
+
+    static std::string makeKeyboardJson(
+        const std::vector<
+            std::vector<
+                std::pair<std::string, std::string>
+            >
+        >& buttons
     );
 };
