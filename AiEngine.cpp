@@ -178,9 +178,7 @@ std::string AiEngine::generateReply(
         ) == 0
     ) {
         model =
-            model.substr(
-                7
-            );
+            model.substr(7);
     }
 
     const std::string url =
@@ -192,24 +190,21 @@ std::string AiEngine::generateReply(
     const std::string requestBody =
         request.dump();
 
-    struct curl_slist* headers =
-        nullptr;
+    struct curl_slist* headers = nullptr;
 
-    headers =
-        curl_slist_append(
-            headers,
-            "Content-Type: application/json"
-        );
+    headers = curl_slist_append(
+        headers,
+        "Content-Type: application/json"
+    );
 
     const std::string apiKeyHeader =
         "x-goog-api-key: " +
         apiKey_;
 
-    headers =
-        curl_slist_append(
-            headers,
-            apiKeyHeader.c_str()
-        );
+    headers = curl_slist_append(
+        headers,
+        apiKeyHeader.c_str()
+    );
 
     curl_easy_setopt(
         curl,
@@ -281,11 +276,35 @@ std::string AiEngine::generateReply(
         1L
     );
 
+    /*
+     * Force HTTP/1.1.
+     * This avoids HTTP/2 framing problems that can occur
+     * with some proxy/network combinations.
+     */
     curl_easy_setopt(
         curl,
         CURLOPT_HTTP_VERSION,
         CURL_HTTP_VERSION_1_1
     );
+
+    /*
+     * Disable the Expect: 100-continue handshake.
+     * Some intermediary proxies handle this poorly.
+     */
+    headers = curl_slist_append(
+        headers,
+        "Expect:"
+    );
+
+    curl_easy_setopt(
+        curl,
+        CURLOPT_HTTPHEADER,
+        headers
+    );
+
+    std::cerr
+        << "Gemini connection test: starting request..."
+        << std::endl;
 
     const CURLcode result =
         curl_easy_perform(curl);
@@ -297,6 +316,29 @@ std::string AiEngine::generateReply(
         CURLINFO_RESPONSE_CODE,
         &httpCode
     );
+
+    long httpVersion = 0;
+
+    curl_easy_getinfo(
+        curl,
+        CURLINFO_HTTP_VERSION,
+        &httpVersion
+    );
+
+    std::cerr
+        << "Gemini connection test: CURL result = "
+        << static_cast<int>(result)
+        << std::endl;
+
+    std::cerr
+        << "Gemini connection test: HTTP code = "
+        << httpCode
+        << std::endl;
+
+    std::cerr
+        << "Gemini connection test: HTTP version = "
+        << httpVersion
+        << std::endl;
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -331,9 +373,7 @@ std::string AiEngine::generateReply(
             json::parse(responseBody);
 
         if (
-            !response.contains(
-                "candidates"
-            ) ||
+            !response.contains("candidates") ||
             !response["candidates"].is_array() ||
             response["candidates"].empty()
         ) {
@@ -377,9 +417,7 @@ std::string AiEngine::generateReply(
                 part["text"].is_string()
             ) {
                 reply +=
-                    part["text"].get<
-                        std::string
-                    >();
+                    part["text"].get<std::string>();
             }
         }
 
