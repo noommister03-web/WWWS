@@ -21,6 +21,17 @@ struct MessageRecord {
     std::optional<long long> updateId;
 };
 
+struct CustoJustoAccount {
+    long long id = 0;
+
+    std::string name;
+    std::string email;
+
+    bool enabled = true;
+
+    long long createdAt = 0;
+};
+
 class Database {
 public:
     explicit Database(const std::string& path);
@@ -30,9 +41,13 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    bool isUpdateProcessed(long long updateId);
+    bool isUpdateProcessed(
+        long long updateId
+    );
 
-    void markUpdateProcessed(long long updateId);
+    void markUpdateProcessed(
+        long long updateId
+    );
 
     void saveMessage(
         long long chatId,
@@ -48,12 +63,36 @@ public:
         int limit
     );
 
+    long long addCustoJustoAccount(
+        const std::string& name,
+        const std::string& email
+    );
+
+    std::vector<CustoJustoAccount>
+    getCustoJustoAccounts();
+
+    std::optional<CustoJustoAccount>
+    getCustoJustoAccount(
+        long long id
+    );
+
+    bool deleteCustoJustoAccount(
+        long long id
+    );
+
+    bool setCustoJustoAccountEnabled(
+        long long id,
+        bool enabled
+    );
+
 private:
     sqlite3* db_ = nullptr;
 
     void initialize();
 
-    void execute(const std::string& sql);
+    void execute(
+        const std::string& sql
+    );
 
     bool hasColumn(
         const std::string& table,
