@@ -63,6 +63,12 @@ void TelegramBot::setMessageHandler(
     handler_ = std::move(handler);
 }
 
+void TelegramBot::setCallbackHandler(
+    CallbackHandler handler
+) {
+    callbackHandler_ = std::move(handler);
+}
+
 void TelegramBot::setStopChecker(
     std::function<bool()> checker
 ) {
@@ -319,9 +325,47 @@ std::string TelegramBot::limitUtf8(
     return text.substr(0, position);
 }
 
+std::string TelegramBot::makeKeyboardJson(
+    const std::vector<
+        std::vector<
+            std::pair<std::string, std::string>
+        >
+    >& buttons
+) {
+    json keyboard =
+        json::array();
+
+    for (const auto& row : buttons) {
+        json keyboardRow =
+            json::array();
+
+        for (const auto& button : row) {
+            json item;
+
+            item["text"] =
+                button.first;
+
+            item["callback_data"] =
+                button.second;
+
+            keyboardRow.push_back(item);
+        }
+
+        keyboard.push_back(keyboardRow);
+    }
+
+    json markup;
+
+    markup["inline_keyboard"] =
+        keyboard;
+
+    return markup.dump();
+}
+
 SendStatus TelegramBot::sendSingleMessage(
     long long chatId,
-    const std::string& text
+    const std::string& text,
+    const std::string& replyMarkup
 ) {
     constexpr std::size_t MAX_TELEGRAM_TEXT =
         4096;
@@ -353,13 +397,19 @@ SendStatus TelegramBot::sendSingleMessage(
         }
     }
 
-    const std::string form =
+    std::string form =
         "chat_id=" +
         urlEncode(
             std::to_string(chatId)
         ) +
         "&text=" +
         urlEncode(safeText);
+
+    if (!replyMarkup.empty()) {
+        form +=
+            "&reply_markup=" +
+            urlEncode(replyMarkup);
+    }
 
     const HttpResponse response =
         postForm(
@@ -428,6 +478,61 @@ SendStatus TelegramBot::sendMessage(
     );
 }
 
+SendStatus TelegramBot::sendMessageWithKeyboard(
+    long long chatId,
+    const std::string& text,
+    const std::vector<
+        std::vector<
+            std::pair<std::string, std::string>
+        >
+    >& buttons
+) {
+    if (text.empty()) {
+        return SendStatus::PermanentFailure;
+    }
+
+    const std::string keyboard =
+        makeKeyboardJson(buttons);
+
+    return sendSingleMessage(
+        chatId,
+        text,
+        keyboard
+    );
+}
+
+bool TelegramBot::answerCallbackQuery(
+    const std::string& callbackQueryId
+) {
+    if (callbackQueryId.empty()) {
+        return false;
+    }
+
+    const std::string form =
+        "callback_query_id=" +
+        urlEncode(callbackQueryId);
+
+    const HttpResponse response =
+        postForm(
+            "answerCallbackQuery",
+            form
+        );
+
+    if (response.networkError) {
+        return false;
+    }
+
+    try {
+        const json data =
+            json::parse(response.body);
+
+        return data.value("ok", false);
+
+    } catch (...) {
+        return false;
+    }
+}
+
 void TelegramBot::run() {
     std::string botUsername;
 
@@ -464,7 +569,9 @@ void TelegramBot::run() {
                 std::to_string(pollTimeout_)
             ) +
             "&allowed_updates=" +
-            urlEncode("[\"message\"]");
+            urlEncode(
+                "[\"message\",\"callback_query\"]"
+            );
 
         if (offset > 0) {
             form +=
@@ -522,8 +629,97 @@ void TelegramBot::run() {
                         0LL
                     );
 
-                offset = updateId + 1;
+                offset =
+                    updateId + 1;
 
+                /*
+                 * CALLBACK QUERY
+                 */
+                if (
+                    update.contains("callback_query") &&
+                    update["callback_query"].is_object()
+                ) {
+                    const auto& callback =
+                        update["callback_query"];
+
+                    CallbackQuery incoming;
+
+                    incoming.updateId =
+                        updateId;
+
+                    incoming.id =
+                        callback.value(
+                            "id",
+                            ""
+                        );
+
+                    incoming.data =
+                        callback.value(
+                            "data",
+                            ""
+                        );
+
+                    if (
+                        callback.contains("from") &&
+                        callback["from"].is_object()
+                    ) {
+                        incoming.senderId =
+                            callback["from"].value(
+                                "id",
+                                0LL
+                            );
+
+                        incoming.username =
+                            callback["from"].value(
+                                "username",
+                                ""
+                            );
+                    }
+
+                    if (
+                        callback.contains("message") &&
+                        callback["message"].is_object()
+                    ) {
+                        const auto& callbackMessage =
+                            callback["message"];
+
+                        if (
+                            callbackMessage.contains("chat") &&
+                            callbackMessage["chat"].is_object()
+                        ) {
+                            incoming.chatId =
+                                callbackMessage["chat"].value(
+                                    "id",
+                                    0LL
+                                );
+                        }
+                    }
+
+                    answerCallbackQuery(
+                        incoming.id
+                    );
+
+                    if (callbackHandler_) {
+                        const bool handled =
+                            callbackHandler_(
+                                incoming
+                            );
+
+                        if (!handled) {
+                            std::cerr
+                                << "Callback handler returned "
+                                   "false for update "
+                                << updateId
+                                << std::endl;
+                        }
+                    }
+
+                    continue;
+                }
+
+                /*
+                 * MESSAGE
+                 */
                 if (
                     !update.contains("message") ||
                     !update["message"].is_object()
