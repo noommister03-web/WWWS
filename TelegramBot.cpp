@@ -5,9 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cctype>
 #include <iostream>
-#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -33,15 +31,6 @@ size_t writeCallback(
     );
 
     return totalSize;
-}
-
-std::string formField(
-    const std::string& key,
-    const std::string& value
-) {
-    return TelegramBot::urlEncode(key) +
-           "=" +
-           TelegramBot::urlEncode(value);
 }
 
 }
@@ -256,6 +245,7 @@ bool TelegramBot::deleteWebhook() {
             json::parse(response.body);
 
         return data.value("ok", false);
+
     } catch (...) {
         return false;
     }
@@ -293,7 +283,9 @@ bool TelegramBot::getMe(
 
         return true;
 
-    } catch (const std::exception& error) {
+    } catch (
+        const std::exception& error
+    ) {
         std::cerr
             << "getMe parse error: "
             << error.what()
@@ -315,9 +307,11 @@ std::string TelegramBot::limitUtf8(
 
     while (
         position > 0 &&
-        (static_cast<unsigned char>(
-            text[position]
-        ) & 0xC0) == 0x80
+        (
+            static_cast<unsigned char>(
+                text[position]
+            ) & 0xC0
+        ) == 0x80
     ) {
         --position;
     }
@@ -360,15 +354,12 @@ SendStatus TelegramBot::sendSingleMessage(
     }
 
     const std::string form =
-        formField(
-            "chat_id",
+        "chat_id=" +
+        urlEncode(
             std::to_string(chatId)
         ) +
-        "&" +
-        formField(
-            "text",
-            safeText
-        );
+        "&text=" +
+        urlEncode(safeText);
 
     const HttpResponse response =
         postForm(
@@ -411,7 +402,9 @@ SendStatus TelegramBot::sendSingleMessage(
 
         return SendStatus::PermanentFailure;
 
-    } catch (const std::exception& error) {
+    } catch (
+        const std::exception& error
+    ) {
         std::cerr
             << "sendMessage parse error: "
             << error.what()
@@ -465,37 +458,46 @@ void TelegramBot::run() {
     long long offset = 0;
 
     while (!stopRequested()) {
-        const std::string form =
-            formField(
-                "timeout",
-                std::to_string(
-                    pollTimeout_
-                )
+        std::string form =
+            "timeout=" +
+            urlEncode(
+                std::to_string(pollTimeout_)
             ) +
-            "&" +
-            formField(
-                "allowed_updates",
-                "[\"message\"]"
-            );
+            "&allowed_updates=" +
+            urlEncode("[\"message\"]");
 
         if (offset > 0) {
-            std::ostringstream offsetStream;
-
-            offsetStream << offset;
-
-            const std::string offsetForm =
-                formField(
-                    "offset",
-                    offsetStream.str()
+            form +=
+                "&offset=" +
+                urlEncode(
+                    std::to_string(offset)
                 );
+        }
 
-            const HttpResponse response =
-                postForm(
-                    "getUpdates",
-                    form + "&" + offsetForm
-                );
+        const HttpResponse response =
+            postForm(
+                "getUpdates",
+                form
+            );
 
-            if (response.networkError) {
+        if (response.networkError) {
+            std::this_thread::sleep_for(
+                std::chrono::seconds(3)
+            );
+
+            continue;
+        }
+
+        try {
+            const json data =
+                json::parse(response.body);
+
+            if (!data.value("ok", false)) {
+                std::cerr
+                    << "getUpdates failed: "
+                    << response.body
+                    << std::endl;
+
                 std::this_thread::sleep_for(
                     std::chrono::seconds(3)
                 );
@@ -503,292 +505,125 @@ void TelegramBot::run() {
                 continue;
             }
 
-            try {
-                const json data =
-                    json::parse(response.body);
+            const json updates =
+                data.value(
+                    "result",
+                    json::array()
+                );
 
-                if (!data.value("ok", false)) {
-                    std::cerr
-                        << "getUpdates failed: "
-                        << response.body
-                        << std::endl;
+            for (const auto& update : updates) {
+                if (stopRequested()) {
+                    break;
+                }
 
-                    std::this_thread::sleep_for(
-                        std::chrono::seconds(3)
+                const long long updateId =
+                    update.value(
+                        "update_id",
+                        0LL
                     );
 
+                offset = updateId + 1;
+
+                if (
+                    !update.contains("message") ||
+                    !update["message"].is_object()
+                ) {
                     continue;
                 }
 
-                const json updates =
-                    data.value(
-                        "result",
-                        json::array()
-                    );
+                const auto& message =
+                    update["message"];
 
-                for (const auto& update : updates) {
-                    if (stopRequested()) {
-                        break;
-                    }
-
-                    const long long updateId =
-                        update.value(
-                            "update_id",
-                            0LL
-                        );
-
-                    offset = updateId + 1;
-
-                    if (
-                        !update.contains("message") ||
-                        !update["message"].is_object()
-                    ) {
-                        continue;
-                    }
-
-                    const auto& message =
-                        update["message"];
-
-                    if (
-                        !message.contains("chat") ||
-                        !message["chat"].is_object()
-                    ) {
-                        continue;
-                    }
-
-                    const long long chatId =
-                        message["chat"].value(
-                            "id",
-                            0LL
-                        );
-
-                    const std::string chatType =
-                        message["chat"].value(
-                            "type",
-                            ""
-                        );
-
-                    if (
-                        privateChatsOnly_ &&
-                        chatType != "private"
-                    ) {
-                        continue;
-                    }
-
-                    if (
-                        !message.contains("text") ||
-                        !message["text"].is_string()
-                    ) {
-                        continue;
-                    }
-
-                    IncomingMessage incoming;
-
-                    incoming.updateId =
-                        updateId;
-
-                    incoming.chatId =
-                        chatId;
-
-                    incoming.text =
-                        message["text"].get<
-                            std::string
-                        >();
-
-                    if (
-                        message.contains("from") &&
-                        message["from"].is_object()
-                    ) {
-                        incoming.senderId =
-                            std::to_string(
-                                message["from"].value(
-                                    "id",
-                                    0LL
-                                )
-                            );
-
-                        incoming.username =
-                            message["from"].value(
-                                "username",
-                                ""
-                            );
-                    }
-
-                    if (handler_) {
-                        const bool handled =
-                            handler_(incoming);
-
-                        if (!handled) {
-                            std::cerr
-                                << "Message handler "
-                                   "returned false for update "
-                                << updateId
-                                << std::endl;
-                        }
-                    }
-                }
-
-            } catch (const std::exception& error) {
-                std::cerr
-                    << "getUpdates parse error: "
-                    << error.what()
-                    << std::endl;
-
-                std::this_thread::sleep_for(
-                    std::chrono::seconds(2)
-                );
-            }
-
-        } else {
-            const HttpResponse response =
-                postForm(
-                    "getUpdates",
-                    form
-                );
-
-            if (response.networkError) {
-                std::this_thread::sleep_for(
-                    std::chrono::seconds(3)
-                );
-
-                continue;
-            }
-
-            try {
-                const json data =
-                    json::parse(response.body);
-
-                if (!data.value("ok", false)) {
-                    std::cerr
-                        << "getUpdates failed: "
-                        << response.body
-                        << std::endl;
-
-                    std::this_thread::sleep_for(
-                        std::chrono::seconds(3)
-                    );
-
+                if (
+                    !message.contains("chat") ||
+                    !message["chat"].is_object()
+                ) {
                     continue;
                 }
 
-                const json updates =
-                    data.value(
-                        "result",
-                        json::array()
+                const long long chatId =
+                    message["chat"].value(
+                        "id",
+                        0LL
                     );
 
-                for (const auto& update : updates) {
-                    if (stopRequested()) {
-                        break;
-                    }
+                const std::string chatType =
+                    message["chat"].value(
+                        "type",
+                        ""
+                    );
 
-                    const long long updateId =
-                        update.value(
-                            "update_id",
-                            0LL
-                        );
-
-                    offset = updateId + 1;
-
-                    if (
-                        !update.contains("message") ||
-                        !update["message"].is_object()
-                    ) {
-                        continue;
-                    }
-
-                    const auto& message =
-                        update["message"];
-
-                    if (
-                        !message.contains("chat") ||
-                        !message["chat"].is_object()
-                    ) {
-                        continue;
-                    }
-
-                    const long long chatId =
-                        message["chat"].value(
-                            "id",
-                            0LL
-                        );
-
-                    const std::string chatType =
-                        message["chat"].value(
-                            "type",
-                            ""
-                        );
-
-                    if (
-                        privateChatsOnly_ &&
-                        chatType != "private"
-                    ) {
-                        continue;
-                    }
-
-                    if (
-                        !message.contains("text") ||
-                        !message["text"].is_string()
-                    ) {
-                        continue;
-                    }
-
-                    IncomingMessage incoming;
-
-                    incoming.updateId =
-                        updateId;
-
-                    incoming.chatId =
-                        chatId;
-
-                    incoming.text =
-                        message["text"].get<
-                            std::string
-                        >();
-
-                    if (
-                        message.contains("from") &&
-                        message["from"].is_object()
-                    ) {
-                        incoming.senderId =
-                            std::to_string(
-                                message["from"].value(
-                                    "id",
-                                    0LL
-                                )
-                            );
-
-                        incoming.username =
-                            message["from"].value(
-                                "username",
-                                ""
-                            );
-                    }
-
-                    if (handler_) {
-                        const bool handled =
-                            handler_(incoming);
-
-                        if (!handled) {
-                            std::cerr
-                                << "Message handler "
-                                   "returned false for update "
-                                << updateId
-                                << std::endl;
-                        }
-                    }
+                if (
+                    privateChatsOnly_ &&
+                    chatType != "private"
+                ) {
+                    continue;
                 }
 
-            } catch (const std::exception& error) {
-                std::cerr
-                    << "getUpdates parse error: "
-                    << error.what()
-                    << std::endl;
+                if (
+                    !message.contains("text") ||
+                    !message["text"].is_string()
+                ) {
+                    continue;
+                }
 
-                std::this_thread::sleep_for(
-                    std::chrono::seconds(2)
-                );
+                IncomingMessage incoming;
+
+                incoming.updateId =
+                    updateId;
+
+                incoming.chatId =
+                    chatId;
+
+                incoming.text =
+                    message["text"].get<
+                        std::string
+                    >();
+
+                if (
+                    message.contains("from") &&
+                    message["from"].is_object()
+                ) {
+                    incoming.senderId =
+                        std::to_string(
+                            message["from"].value(
+                                "id",
+                                0LL
+                            )
+                        );
+
+                    incoming.username =
+                        message["from"].value(
+                            "username",
+                            ""
+                        );
+                }
+
+                if (handler_) {
+                    const bool handled =
+                        handler_(incoming);
+
+                    if (!handled) {
+                        std::cerr
+                            << "Message handler returned "
+                               "false for update "
+                            << updateId
+                            << std::endl;
+                    }
+                }
             }
+
+        } catch (
+            const std::exception& error
+        ) {
+            std::cerr
+                << "getUpdates parse error: "
+                << error.what()
+                << std::endl;
+
+            std::this_thread::sleep_for(
+                std::chrono::seconds(2)
+            );
         }
     }
 
