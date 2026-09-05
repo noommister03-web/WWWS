@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+
+build/
+cmake-build-*/
+
+data/
+
+*.sqlite
+*.sqlite3
+*.db
+
+.idea/
+.vscode/
