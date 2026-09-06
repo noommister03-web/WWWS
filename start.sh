@@ -46,7 +46,7 @@ if [ "$MANUAL_MODE" = "true" ]; then
 
   password_hash="$(caddy hash-password --plaintext "$REMOTE_BROWSER_PASSWORD")"
   cat > /tmp/Caddyfile <<EOF
-:{$PUBLIC_PORT} {
+:${PUBLIC_PORT} {
   basicauth /* {
     custo $password_hash
   }
@@ -57,7 +57,7 @@ else
   node /app/browser_worker.js >/tmp/browser-worker.log 2>&1 &
   worker_pid=$!
   cat > /tmp/Caddyfile <<EOF
-:{$PUBLIC_PORT} {
+:${PUBLIC_PORT} {
   respond "CustoJusto bridge is running" 200
 }
 EOF
