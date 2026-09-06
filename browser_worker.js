@@ -44,13 +44,15 @@ async function openPage(accountId) {
   const profileDir = accountProfileDir(accountId);
   await fsp.mkdir(profileDir, {recursive: true});
   const context = await chromium.launchPersistentContext(profileDir, {
+    // A cold Chromium start on Railway can exceed Playwright's 30-second default.
+    timeout: Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS || 120000),
     headless: process.env.CJ_HEADLESS !== "false",
     viewport: {width: 1365, height: 900},
     args: ["--no-sandbox", "--disable-dev-shm-usage"]
   });
   const pages = context.pages();
   const page = pages[0] || await context.newPage();
-  page.setDefaultTimeout(Number(process.env.CJ_ACTION_TIMEOUT_MS || 30000));
+  page.setDefaultTimeout(Number(process.env.CJ_ACTION_TIMEOUT_MS || 60000));
   return {context, page};
 }
 
