@@ -82,11 +82,13 @@ async function login(page, email, password) {
     }
   }
 
-  const emailField = page.locator('input[type="email"], input[name*="email" i], input[id*="email" i]').first();
-  const passwordField = page.locator('input[type="password"]').first();
+  // CustoJusto uses #username rather than an input[type=email].
+  const emailField = page.locator('#username, input[name="username"], input[type="email"]').first();
+  const passwordField = page.locator('#password, input[name="password"], input[type="password"]').first();
+  await emailField.waitFor({state: "visible"});
   await emailField.fill(email);
   await passwordField.fill(password);
-  const submit = page.locator('button[type="submit"], input[type="submit"], button:has-text("Entrar"), button:has-text("Login")').first();
+  const submit = page.locator('form button[type="submit"], button:has-text("Entrar")').last();
   await submit.click();
   await page.waitForTimeout(1500);
 
