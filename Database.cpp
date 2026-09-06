@@ -19,26 +19,37 @@ void checkSqlite(
         result != SQLITE_DONE &&
         result != SQLITE_ROW
     ) {
-        std::string message =
-            operation;
+        std::string message = operation;
 
-        if (db) {
+        if (db != nullptr) {
             message += ": ";
             message += sqlite3_errmsg(db);
         }
 
-        throw std::runtime_error(
-            message
-        );
+        throw std::runtime_error(message);
     }
 }
 
+std::string columnText(
+    sqlite3_stmt* statement,
+    int column
+) {
+    const auto* value = sqlite3_column_text(
+        statement,
+        column
+    );
+
+    return value
+        ? reinterpret_cast<const char*>(value)
+        : "";
 }
+
+} // namespace
 
 Database::Database(
     const std::string& path
 ) {
-    std::filesystem::path dbPath(path);
+    const std::filesystem::path dbPath(path);
 
     if (dbPath.has_parent_path()) {
         std::filesystem::create_directories(
@@ -46,47 +57,33 @@ Database::Database(
         );
     }
 
-    int result =
-        sqlite3_open(
-            path.c_str(),
-            &db_
-        );
+    const int result = sqlite3_open(
+        path.c_str(),
+        &db_
+    );
 
     if (result != SQLITE_OK) {
         std::string message =
             "Unable to open SQLite database";
 
-        if (db_) {
+        if (db_ != nullptr) {
             message += ": ";
             message += sqlite3_errmsg(db_);
         }
 
-        throw std::runtime_error(
-            message
-        );
+        throw std::runtime_error(message);
     }
 
-    execute(
-        "PRAGMA journal_mode=WAL;"
-    );
-
-    execute(
-        "PRAGMA synchronous=NORMAL;"
-    );
-
-    execute(
-        "PRAGMA foreign_keys=ON;"
-    );
-
-    execute(
-        "PRAGMA busy_timeout=5000;"
-    );
+    execute("PRAGMA journal_mode=WAL;");
+    execute("PRAGMA synchronous=NORMAL;");
+    execute("PRAGMA foreign_keys=ON;");
+    execute("PRAGMA busy_timeout=5000;");
 
     initialize();
 }
 
 Database::~Database() {
-    if (db_) {
+    if (db_ != nullptr) {
         sqlite3_close(db_);
         db_ = nullptr;
     }
@@ -97,26 +94,23 @@ void Database::execute(
 ) {
     char* error = nullptr;
 
-    int result =
-        sqlite3_exec(
-            db_,
-            sql.c_str(),
-            nullptr,
-            nullptr,
-            &error
-        );
+    const int result = sqlite3_exec(
+        db_,
+        sql.c_str(),
+        nullptr,
+        nullptr,
+        &error
+    );
 
     if (result != SQLITE_OK) {
         std::string message =
-            error
+            error != nullptr
                 ? error
                 : "SQLite error";
 
         sqlite3_free(error);
 
-        throw std::runtime_error(
-            message
-        );
+        throw std::runtime_error(message);
     }
 }
 
@@ -124,64 +118,40 @@ bool Database::hasColumn(
     const std::string& table,
     const std::string& column
 ) {
-    sqlite3_stmt* statement =
-        nullptr;
+    sqlite3_stmt* statement = nullptr;
 
     const std::string sql =
-        "PRAGMA table_info(" +
-        table +
-        ");";
+        "PRAGMA table_info(" + table + ");";
 
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql.c_str(),
-            -1,
-            &statement,
-            nullptr
-        );
+    int result = sqlite3_prepare_v2(
+        db_,
+        sql.c_str(),
+        -1,
+        &statement,
+        nullptr
+    );
 
     checkSqlite(
         result,
         db_,
-        "PRAGMA table_info"
+        "prepare table_info"
     );
 
     bool found = false;
 
-    while (
-        sqlite3_step(statement) ==
-        SQLITE_ROW
-    ) {
-        const unsigned char* name =
-            sqlite3_column_text(
-                statement,
-                1
-            );
-
-        if (
-            name &&
-            column ==
-                reinterpret_cast<
-                    const char*
-                >(name)
-        ) {
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        if (columnText(statement, 1) == column) {
             found = true;
             break;
         }
     }
 
-    sqlite3_finalize(
-        statement
-    );
+    sqlite3_finalize(statement);
 
     return found;
 }
 
 void Database::initialize() {
-    /*
-     * MESSAGES
-     */
     execute(R"SQL(
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,44 +165,6 @@ void Database::initialize() {
         );
     )SQL");
 
-    if (
-        !hasColumn(
-            "messages",
-            "update_id"
-        )
-    ) {
-        execute(
-            "ALTER TABLE messages "
-            "ADD COLUMN update_id INTEGER;"
-        );
-    }
-
-    if (
-        !hasColumn(
-            "messages",
-            "sender_id"
-        )
-    ) {
-        execute(
-            "ALTER TABLE messages "
-            "ADD COLUMN sender_id "
-            "TEXT NOT NULL DEFAULT '';"
-        );
-    }
-
-    if (
-        !hasColumn(
-            "messages",
-            "username"
-        )
-    ) {
-        execute(
-            "ALTER TABLE messages "
-            "ADD COLUMN username "
-            "TEXT NOT NULL DEFAULT '';"
-        );
-    }
-
     execute(R"SQL(
         CREATE UNIQUE INDEX IF NOT EXISTS
         idx_messages_update_id
@@ -245,55 +177,127 @@ void Database::initialize() {
         ON messages(chat_id, id);
     )SQL");
 
-    /*
-     * PROCESSED UPDATES
-     */
     execute(R"SQL(
         CREATE TABLE IF NOT EXISTS processed_updates (
             update_id INTEGER PRIMARY KEY
         );
     )SQL");
 
-    /*
-     * CUSTOJUSTO ACCOUNTS
-     */
     execute(R"SQL(
         CREATE TABLE IF NOT EXISTS custojusto_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             email TEXT NOT NULL DEFAULT '',
+            login_url TEXT NOT NULL
+                DEFAULT 'https://www.custojusto.pt',
             enabled INTEGER NOT NULL DEFAULT 1,
+            logged_in INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         );
     )SQL");
+
+    // РњРёРіСЂР°С†РёСЏ РґР»СЏ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РµР№ Р±Р°Р·С‹.
+    if (!hasColumn("custojusto_accounts", "login_url")) {
+        execute(
+            "ALTER TABLE custojusto_accounts "
+            "ADD COLUMN login_url TEXT NOT NULL "
+            "DEFAULT 'https://www.custojusto.pt';"
+        );
+    }
+
+    if (!hasColumn("custojusto_accounts", "logged_in")) {
+        execute(
+            "ALTER TABLE custojusto_accounts "
+            "ADD COLUMN logged_in INTEGER NOT NULL "
+            "DEFAULT 0;"
+        );
+    }
 
     execute(R"SQL(
         CREATE INDEX IF NOT EXISTS
         idx_custojusto_accounts_enabled
         ON custojusto_accounts(enabled);
     )SQL");
+
+    execute(R"SQL(
+        CREATE TABLE IF NOT EXISTS custojusto_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            conversation_url TEXT NOT NULL,
+            listing_url TEXT NOT NULL DEFAULT '',
+            listing_title TEXT NOT NULL DEFAULT '',
+            contact_name TEXT NOT NULL DEFAULT '',
+            last_message_id TEXT NOT NULL DEFAULT '',
+            last_message_text TEXT NOT NULL DEFAULT '',
+            last_message_at INTEGER NOT NULL DEFAULT 0,
+            unread INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            UNIQUE(account_id, conversation_url),
+
+            FOREIGN KEY(account_id)
+                REFERENCES custojusto_accounts(id)
+                ON DELETE CASCADE
+        );
+    )SQL");
+
+    execute(R"SQL(
+        CREATE INDEX IF NOT EXISTS
+        idx_custojusto_conversations_account
+        ON custojusto_conversations(account_id, updated_at DESC);
+    )SQL");
+
+    execute(R"SQL(
+        CREATE TABLE IF NOT EXISTS custojusto_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            conversation_id INTEGER NOT NULL,
+            external_message_id TEXT NOT NULL DEFAULT '',
+            sender_name TEXT NOT NULL DEFAULT '',
+            original_text TEXT NOT NULL,
+            translated_text TEXT NOT NULL DEFAULT '',
+            incoming INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+
+            UNIQUE(account_id, external_message_id),
+
+            FOREIGN KEY(account_id)
+                REFERENCES custojusto_accounts(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY(conversation_id)
+                REFERENCES custojusto_conversations(id)
+                ON DELETE CASCADE
+        );
+    )SQL");
+
+    execute(R"SQL(
+        CREATE INDEX IF NOT EXISTS
+        idx_custojusto_messages_conversation
+        ON custojusto_messages(conversation_id, id);
+    )SQL");
 }
 
 bool Database::isUpdateProcessed(
     long long updateId
 ) {
-    sqlite3_stmt* statement =
-        nullptr;
+    sqlite3_stmt* statement = nullptr;
 
-    const char* sql =
-        "SELECT 1 "
-        "FROM processed_updates "
-        "WHERE update_id = ? "
-        "LIMIT 1;";
+    const char* sql = R"SQL(
+        SELECT 1
+        FROM processed_updates
+        WHERE update_id = ?
+        LIMIT 1;
+    )SQL";
 
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
+    int result = sqlite3_prepare_v2(
+        db_,
+        sql,
+        -1,
+        &statement,
+        nullptr
+    );
 
     checkSqlite(
         result,
@@ -307,15 +311,12 @@ bool Database::isUpdateProcessed(
         updateId
     );
 
-    result =
-        sqlite3_step(statement);
+    result = sqlite3_step(statement);
 
-    bool processed =
+    const bool processed =
         result == SQLITE_ROW;
 
-    sqlite3_finalize(
-        statement
-    );
+    sqlite3_finalize(statement);
 
     return processed;
 }
@@ -323,22 +324,20 @@ bool Database::isUpdateProcessed(
 void Database::markUpdateProcessed(
     long long updateId
 ) {
-    sqlite3_stmt* statement =
-        nullptr;
+    sqlite3_stmt* statement = nullptr;
 
-    const char* sql =
-        "INSERT OR IGNORE INTO "
-        "processed_updates(update_id) "
-        "VALUES(?);";
+    const char* sql = R"SQL(
+        INSERT OR IGNORE INTO processed_updates(update_id)
+        VALUES(?);
+    )SQL";
 
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
+    int result = sqlite3_prepare_v2(
+        db_,
+        sql,
+        -1,
+        &statement,
+        nullptr
+    );
 
     checkSqlite(
         result,
@@ -352,8 +351,7 @@ void Database::markUpdateProcessed(
         updateId
     );
 
-    result =
-        sqlite3_step(statement);
+    result = sqlite3_step(statement);
 
     checkSqlite(
         result,
@@ -361,9 +359,7 @@ void Database::markUpdateProcessed(
         "insert processed update"
     );
 
-    sqlite3_finalize(
-        statement
-    );
+    sqlite3_finalize(statement);
 }
 
 void Database::saveMessage(
@@ -374,12 +370,10 @@ void Database::saveMessage(
     bool incoming,
     std::optional<long long> updateId
 ) {
-    sqlite3_stmt* statement =
-        nullptr;
+    sqlite3_stmt* statement = nullptr;
 
     const char* sql = R"SQL(
-        INSERT OR IGNORE INTO messages
-        (
+        INSERT OR IGNORE INTO messages (
             update_id,
             chat_id,
             sender_id,
@@ -399,14 +393,13 @@ void Database::saveMessage(
         );
     )SQL";
 
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
+    int result = sqlite3_prepare_v2(
+        db_,
+        sql,
+        -1,
+        &statement,
+        nullptr
+    );
 
     checkSqlite(
         result,
@@ -420,19 +413,11 @@ void Database::saveMessage(
             1,
             *updateId
         );
-    }
-    else {
-        sqlite3_bind_null(
-            statement,
-            1
-        );
+    } else {
+        sqlite3_bind_null(statement, 1);
     }
 
-    sqlite3_bind_int64(
-        statement,
-        2,
-        chatId
-    );
+    sqlite3_bind_int64(statement, 2, chatId);
 
     sqlite3_bind_text(
         statement,
@@ -464,8 +449,7 @@ void Database::saveMessage(
         incoming ? 1 : 0
     );
 
-    result =
-        sqlite3_step(statement);
+    result = sqlite3_step(statement);
 
     checkSqlite(
         result,
@@ -473,577 +457,7 @@ void Database::saveMessage(
         "insert message"
     );
 
-    sqlite3_finalize(
-        statement
-    );
-}
-
-std::vector<MessageRecord>
-Database::getHistory(
-    long long chatId,
-    int limit
-) {
-    std::vector<MessageRecord>
-        result;
-
-    sqlite3_stmt* statement =
-        nullptr;
-
-    const char* sql = R"SQL(
-        SELECT
-            id,
-            chat_id,
-            sender_id,
-            username,
-            text,
-            incoming,
-            timestamp,
-            update_id
-        FROM (
-            SELECT
-                id,
-                chat_id,
-                sender_id,
-                username,
-                text,
-                incoming,
-                timestamp,
-                update_id
-            FROM messages
-            WHERE chat_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-        )
-        ORDER BY id ASC;
-    )SQL";
-
-    int rc =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
-
-    checkSqlite(
-        rc,
-        db_,
-        "prepare history query"
-    );
-
-    sqlite3_bind_int64(
-        statement,
-        1,
-        chatId
-    );
-
-    sqlite3_bind_int(
-        statement,
-        2,
-        limit
-    );
-
-    while (
-        (rc = sqlite3_step(statement)) ==
-        SQLITE_ROW
-    ) {
-        MessageRecord record;
-
-        record.id =
-            sqlite3_column_int64(
-                statement,
-                0
-            );
-
-        record.chatId =
-            sqlite3_column_int64(
-                statement,
-                1
-            );
-
-        const auto* sender =
-            sqlite3_column_text(
-                statement,
-                2
-            );
-
-        const auto* username =
-            sqlite3_column_text(
-                statement,
-                3
-            );
-
-        const auto* text =
-            sqlite3_column_text(
-                statement,
-                4
-            );
-
-        record.senderId =
-            sender
-                ? reinterpret_cast<
-                    const char*
-                  >(sender)
-                : "";
-
-        record.username =
-            username
-                ? reinterpret_cast<
-                    const char*
-                  >(username)
-                : "";
-
-        record.text =
-            text
-                ? reinterpret_cast<
-                    const char*
-                  >(text)
-                : "";
-
-        record.incoming =
-            sqlite3_column_int(
-                statement,
-                5
-            ) != 0;
-
-        record.timestamp =
-            sqlite3_column_int64(
-                statement,
-                6
-            );
-
-        if (
-            sqlite3_column_type(
-                statement,
-                7
-            ) != SQLITE_NULL
-        ) {
-            record.updateId =
-                sqlite3_column_int64(
-                    statement,
-                    7
-                );
-        }
-
-        result.push_back(
-            std::move(record)
-        );
-    }
-
-    if (rc != SQLITE_DONE) {
-        sqlite3_finalize(
-            statement
-        );
-
-        throw std::runtime_error(
-            "Unable to read message history"
-        );
-    }
-
-    sqlite3_finalize(
-        statement
-    );
-
-    return result;
-}
-
-/*
- * CUSTOJUSTO
- */
-
-long long Database::addCustoJustoAccount(
-    const std::string& name,
-    const std::string& email
-) {
-    sqlite3_stmt* statement =
-        nullptr;
-
-    const char* sql = R"SQL(
-        INSERT INTO custojusto_accounts
-        (
-            name,
-            email,
-            enabled,
-            created_at
-        )
-        VALUES (
-            ?,
-            ?,
-            1,
-            strftime('%s','now')
-        );
-    )SQL";
-
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
-
-    checkSqlite(
-        result,
-        db_,
-        "prepare CustoJusto account insert"
-    );
-
-    sqlite3_bind_text(
-        statement,
-        1,
-        name.c_str(),
-        -1,
-        SQLITE_TRANSIENT
-    );
-
-    sqlite3_bind_text(
-        statement,
-        2,
-        email.c_str(),
-        -1,
-        SQLITE_TRANSIENT
-    );
-
-    result =
-        sqlite3_step(statement);
-
-    checkSqlite(
-        result,
-        db_,
-        "insert CustoJusto account"
-    );
-
-    sqlite3_finalize(
-        statement
-    );
-
-    return sqlite3_last_insert_rowid(
-        db_
-    );
-}
-
-std::vector<CustoJustoAccount>
-Database::getCustoJustoAccounts() {
-    std::vector<CustoJustoAccount>
-        result;
-
-    sqlite3_stmt* statement =
-        nullptr;
-
-    const char* sql = R"SQL(
-        SELECT
-            id,
-            name,
-            email,
-            enabled,
-            created_at
-        FROM custojusto_accounts
-        ORDER BY id ASC;
-    )SQL";
-
-    int rc =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
-
-    checkSqlite(
-        rc,
-        db_,
-        "prepare CustoJusto accounts query"
-    );
-
-    while (
-        (rc = sqlite3_step(statement)) ==
-        SQLITE_ROW
-    ) {
-        CustoJustoAccount account;
-
-        account.id =
-            sqlite3_column_int64(
-                statement,
-                0
-            );
-
-        const auto* name =
-            sqlite3_column_text(
-                statement,
-                1
-            );
-
-        const auto* email =
-            sqlite3_column_text(
-                statement,
-                2
-            );
-
-        account.name =
-            name
-                ? reinterpret_cast<
-                    const char*
-                  >(name)
-                : "";
-
-        account.email =
-            email
-                ? reinterpret_cast<
-                    const char*
-                  >(email)
-                : "";
-
-        account.enabled =
-            sqlite3_column_int(
-                statement,
-                3
-            ) != 0;
-
-        account.createdAt =
-            sqlite3_column_int64(
-                statement,
-                4
-            );
-
-        result.push_back(
-            std::move(account)
-        );
-    }
-
-    if (rc != SQLITE_DONE) {
-        sqlite3_finalize(
-            statement
-        );
-
-        throw std::runtime_error(
-            "Unable to read CustoJusto accounts"
-        );
-    }
-
-    sqlite3_finalize(
-        statement
-    );
-
-    return result;
-}
-
-std::optional<CustoJustoAccount>
-Database::getCustoJustoAccount(
-    long long id
-) {
-    sqlite3_stmt* statement =
-        nullptr;
-
-    const char* sql = R"SQL(
-        SELECT
-            id,
-            name,
-            email,
-            enabled,
-            created_at
-        FROM custojusto_accounts
-        WHERE id = ?
-        LIMIT 1;
-    )SQL";
-
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
-
-    checkSqlite(
-        result,
-        db_,
-        "prepare CustoJusto account query"
-    );
-
-    sqlite3_bind_int64(
-        statement,
-        1,
-        id
-    );
-
-    result =
-        sqlite3_step(statement);
-
-    if (result == SQLITE_DONE) {
-        sqlite3_finalize(
-            statement
-        );
-
-        return std::nullopt;
-    }
-
-    checkSqlite(
-        result,
-        db_,
-        "read CustoJusto account"
-    );
-
-    CustoJustoAccount account;
-
-    account.id =
-        sqlite3_column_int64(
-            statement,
-            0
-        );
-
-    const auto* name =
-        sqlite3_column_text(
-            statement,
-            1
-        );
-
-    const auto* email =
-        sqlite3_column_text(
-            statement,
-            2
-        );
-
-    account.name =
-        name
-            ? reinterpret_cast<
-                const char*
-              >(name)
-            : "";
-
-    account.email =
-        email
-            ? reinterpret_cast<
-                const char*
-              >(email)
-            : "";
-
-    account.enabled =
-        sqlite3_column_int(
-            statement,
-            3
-        ) != 0;
-
-    account.createdAt =
-        sqlite3_column_int64(
-            statement,
-            4
-        );
-
-    sqlite3_finalize(
-        statement
-    );
-
-    return account;
-}
-
-bool Database::deleteCustoJustoAccount(
-    long long id
-) {
-    sqlite3_stmt* statement =
-        nullptr;
-
-    const char* sql =
-        "DELETE FROM custojusto_accounts "
-        "WHERE id = ?;";
-
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
-
-    checkSqlite(
-        result,
-        db_,
-        "prepare CustoJusto account delete"
-    );
-
-    sqlite3_bind_int64(
-        statement,
-        1,
-        id
-    );
-
-    result =
-        sqlite3_step(statement);
-
-    checkSqlite(
-        result,
-        db_,
-        "delete CustoJusto account"
-    );
-
-    const bool deleted =
-        sqlite3_changes(db_) > 0;
-
-    sqlite3_finalize(
-        statement
-    );
-
-    return deleted;
-}
-
-bool Database::setCustoJustoAccountEnabled(
-    long long id,
-    bool enabled
-) {
-    sqlite3_stmt* statement =
-        nullptr;
-
-    const char* sql =
-        "UPDATE custojusto_accounts "
-        "SET enabled = ? "
-        "WHERE id = ?;";
-
-    int result =
-        sqlite3_prepare_v2(
-            db_,
-            sql,
-            -1,
-            &statement,
-            nullptr
-        );
-
-    checkSqlite(
-        result,
-        db_,
-        "prepare CustoJusto account update"
-    );
-
-    sqlite3_bind_int(
-        statement,
-        1,
-        enabled ? 1 : 0
-    );
-
-    sqlite3_bind_int64(
-        statement,
-        2,
-        id
-    );
-
-    result =
-        sqlite3_step(statement);
-
-    checkSqlite(
-        result,
-        db_,
-        "update CustoJusto account"
-    );
-
-    const bool updated =
-        sqlite3_changes(db_) > 0;
-
-    sqlite3_finalize(
-        statement
-    );
-
-    return updated;
+    sqlite3_finalize(statement);
+    
+    
 }
