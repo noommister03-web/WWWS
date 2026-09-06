@@ -33,14 +33,24 @@ telegram-crm/
 ├── AiEngine.hpp
 └── AiEngine.cpp
 
-## CustoJusto browser worker in Railway
+## CustoJusto in the existing Railway service
 
-The Telegram service and the Playwright worker run as **two Railway services** from this repository.
+The default `Dockerfile` now runs both components in the **same Railway service**:
 
-1. Create a second service from the same GitHub repository and set its Dockerfile path to `Dockerfile.worker`.
-2. Add a persistent Railway Volume mounted at `/app/data` on the worker service. This keeps a separate persistent browser profile at `/app/data/custojusto/profiles/<account-id>` for every CustoJusto account.
-3. On the worker set `BROWSER_WORKER_SHARED_SECRET` to a long random value. Use the same value on the Telegram service.
-4. On the Telegram service set `BROWSER_WORKER_URL` to the worker's Railway private domain, for example `http://custojusto-worker.railway.internal:3001`.
-5. Keep `DB_PATH=/app/data/bot.sqlite3` on the Telegram service and attach its own persistent `/app/data` Volume.
+- the C++ Telegram CRM process;
+- the local Playwright worker at `http://127.0.0.1:3001`.
 
-The worker exposes `/health` without authentication for Railway health checks. All operational endpoints require `BROWSER_WORKER_SHARED_SECRET`.
+This means no second Railway service is necessary for the first full end-to-end test. Add one persistent Volume mounted at `/app/data`; it stores the SQLite database and the independent CustoJusto browser profiles in `/app/data/custojusto/profiles/<account-id>`.
+
+Set these Railway variables on the existing service:
+
+```text
+BROWSER_WORKER_URL=http://127.0.0.1:3001
+BROWSER_WORKER_SHARED_SECRET=<long-random-secret>
+CJ_PROFILE_ROOT=/app/data/custojusto/profiles
+DB_PATH=/app/data/bot.sqlite3
+```
+
+Keep the existing `TG_BOT_TOKEN`, `OWNER_TELEGRAM_ID`, `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` variables. The worker will not start unless `BROWSER_WORKER_SHARED_SECRET` is set.
+
+`Dockerfile.worker` remains available for splitting the browser worker into a separate service later, when needed for scaling.
