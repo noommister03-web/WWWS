@@ -47,36 +47,21 @@ std::string accountStatus(
 
 int main() {
     try {
-        Config config;
+        const Config config = Config::load();
 
-        const char* token =
-            std::getenv("TG_BOT_TOKEN");
-
-        const char* ownerId =
-            std::getenv("OWNER_TELEGRAM_ID");
-
-        const char* aiKey =
-            std::getenv("AI_API_KEY");
-
-        if (token == nullptr || *token == '\0') {
-            std::cerr
-                << "TG_BOT_TOKEN is missing\n";
-            return 1;
-        }
+        const char* ownerId = std::getenv("OWNER_TELEGRAM_ID");
 
         if (ownerId == nullptr || *ownerId == '\0') {
-            std::cerr
-                << "OWNER_TELEGRAM_ID is missing\n";
+            std::cerr << "OWNER_TELEGRAM_ID is missing\n";
             return 1;
         }
 
-        const long long ownerTelegramId =
-            std::stoll(ownerId);
+        const long long ownerTelegramId = std::stoll(ownerId);
 
         Database db(config.dbPath);
 
         TelegramBot bot(
-            token,
+            config.telegramToken,
             config.telegramPollTimeout,
             config.privateChatsOnly
         );
@@ -567,7 +552,7 @@ int main() {
                         message.updateId
                     );
 
-                    if (!aiKey || std::string(aiKey).empty()) {
+                    if (!ai.enabled()) {
                         bot.sendMessage(message.chatId, "Сообщение получено.");
                         return true;
                     }
@@ -583,6 +568,86 @@ int main() {
 
                 return true;
             }
+        );
+
+        bot.setPeriodicHandler(
+            [&]() {
+                const auto accounts = db.getCustoJustoAccounts();
+
+                for (const auto& account : accounts) {
+                    if (!account.enabled || !account.loggedIn) {
+                        continue;
+                    }
+
+                    auto* client = getClient(account.id);
+                    client->setBaseUrl(account.loginUrl);
+                    const auto conversations = client->getConversations();
+
+                    if (!client->isLoggedIn()) {
+                        db.setCustoJustoAccountLoggedIn(account.id, false);
+                        continue;
+                    }
+
+                    for (const auto& conversation : conversations) {
+                        const long long conversationId =
+                            db.upsertCustoJustoConversation(
+                                account.id,
+                                conversation.url,
+                                conversation.listingUrl,
+                                conversation.listingTitle,
+                                conversation.buyerName,
+                                conversation.id,
+                                conversation.lastMessage,
+                                0,
+                                conversation.unread
+                            );
+
+                        const auto messages = client->getMessages(conversation.url);
+
+                        for (const auto& item : messages) {
+                            if (!item.incoming ||
+                                db.hasCustoJustoExternalMessage(account.id, item.id)) {
+                                continue;
+                            }
+
+                            std::string translated = item.text;
+                            if (ai.enabled()) {
+                                MessageRecord translationRequest;
+                                translationRequest.incoming = true;
+                                translationRequest.text =
+                                    "Переведи следующий текст с европейского португальского на русский. "
+                                    "Верни только перевод без комментариев:\n\n" + item.text;
+                                const std::string answer = ai.generateReply(
+                                    std::vector<MessageRecord>{translationRequest}
+                                );
+                                if (!answer.empty()) {
+                                    translated = answer;
+                                }
+                            }
+
+                            db.saveCustoJustoMessage(
+                                account.id,
+                                conversationId,
+                                item.id,
+                                item.sender,
+                                item.text,
+                                translated,
+                                true
+                            );
+
+                            bot.sendMessage(
+                                ownerTelegramId,
+                                "📩 Новое сообщение CustoJusto\n\n"
+                                "Аккаунт: " + account.name + "\n"
+                                "Диалог: " + conversation.title + "\n\n"
+                                "🇵🇹 " + item.text + "\n\n"
+                                "🇷🇺 " + translated
+                            );
+                        }
+                    }
+                }
+            },
+            45
         );
 
         bot.sendMessageWithKeyboard(

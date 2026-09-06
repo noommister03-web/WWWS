@@ -211,29 +211,24 @@ async function conversations(accountId, baseUrl) {
   await page.goto(baseUrl || BASE, {waitUntil:"domcontentloaded", timeout:30000});
   const state = await detectState(page);
   if (!state.loggedIn) return {ok:false, error:state.state};
-
   if (!(await openChat(page))) return {ok:false, error:"chat_not_found"};
 
-  const data = await page.locator("a[href], [role='link']").evaluateAll((els) => {
-    const out = [];
-    const seen = new Set();
+  const data = await page.locator("a[href]").evaluateAll((els) => {
+    const out = [], seen = new Set();
     for (const el of els) {
-      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
       const href = el.href || el.getAttribute("href") || "";
-      if (!text || !href) continue;
-      const key = href + "|" + text;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (href.toLowerCase().includes("chat") || text.length >= 3) {
-        out.push({text, href});
-      }
+      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+      if (!href || !text || href === location.href) continue;
+      const lower = href.toLowerCase();
+      if (!/(chat|mensag|conversation|conversa)/.test(lower)) continue;
+      if (seen.has(href)) continue;
+      seen.add(href);
+      out.push({id:href, url:href, title:text.slice(0, 250), unread:/\b\d+\b|nova|novo|unread/i.test(text)});
     }
-    return out.slice(0, 200);
+    return out.slice(0, 100);
   });
-
   return {ok:true, conversations:data};
 }
-
 async function messages(accountId, conversationUrl) {
   const context = await getContext(accountId);
   const page = await getPage(context);
@@ -241,10 +236,21 @@ async function messages(accountId, conversationUrl) {
   const state = await detectState(page);
   if (!state.loggedIn) return {ok:false, error:state.state};
 
-  const data = await page.locator("body").innerText({timeout:10000});
-  return {ok:true, text:data};
+  const items = await page.locator("[data-message-id], [data-testid*='message'], .message, [role='listitem']").evaluateAll((els) =>
+    els.map((el, index) => {
+      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+      const cls = String(el.className || "").toLowerCase();
+      const id = el.getAttribute("data-message-id") || el.getAttribute("id") || `${index}:${text}`;
+      return {
+        id, text: text.slice(0, 4000),
+        sender: el.getAttribute("data-sender") || "",
+        incoming: !/(outgoing|sent|mine|own-message)/.test(cls),
+        timestamp: el.getAttribute("data-timestamp") || ""
+      };
+    }).filter(x => x.text)
+  );
+  return {ok:true, messages:items.slice(-100)};
 }
-
 async function send(accountId, conversationUrl, text) {
   const context = await getContext(accountId);
   const page = await getPage(context);

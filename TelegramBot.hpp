@@ -41,6 +41,9 @@ public:
     using CallbackHandler =
         std::function<bool(const CallbackQuery&)>;
 
+    using PeriodicHandler =
+        std::function<void()>;
+
     TelegramBot(
         std::string token,
         int pollTimeout,
@@ -57,6 +60,11 @@ public:
 
     void setStopChecker(
         std::function<bool()> checker
+    );
+
+    void setPeriodicHandler(
+        PeriodicHandler handler,
+        int intervalSeconds
     );
 
     void run();
@@ -98,6 +106,9 @@ private:
     MessageHandler handler_;
 
     CallbackHandler callbackHandler_;
+    PeriodicHandler periodicHandler_;
+    int periodicIntervalSeconds_ = 30;
+    std::chrono::steady_clock::time_point nextPeriodicRun_;
 
     std::function<bool()> stopChecker_;
 

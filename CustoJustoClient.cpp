@@ -1,12 +1,15 @@
 #include "CustoJustoClient.hpp"
 
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <string>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+
+using json = nlohmann::json;
 
 namespace {
 
@@ -333,7 +336,6 @@ bool CustoJustoClient::isLoggedIn() const {
 std::vector<CustoJustoConversation>
 CustoJustoClient::getConversations() {
     std::vector<CustoJustoConversation> result;
-
     lastError_.clear();
 
     if (!checkSession()) {
@@ -341,152 +343,46 @@ CustoJustoClient::getConversations() {
     }
 
     std::ostringstream body;
-
-    body
-        << "{"
-        << "\"accountId\":"
-        << accountId_
-        << ","
-        << "\"baseUrl\":\""
-        << jsonEscape(baseUrl_)
-        << "\""
-        << "}";
+    body << "{\"accountId\":" << accountId_
+         << ",\"baseUrl\":\"" << jsonEscape(baseUrl_) << "\"}";
 
     std::string response;
-
-    if (!post(
-            "/conversations",
-            body.str(),
-            response
-        )) {
+    if (!post("/conversations", body.str(), response)) {
         return result;
     }
 
-    const std::string marker =
-        "\"conversations\":[";
-
-    const std::size_t arrayStart =
-        response.find(marker);
-
-    if (
-        arrayStart ==
-        std::string::npos
-    ) {
-        return result;
-    }
-
-    std::size_t pos =
-        arrayStart + marker.size();
-
-    while (pos < response.size()) {
-        const std::size_t textKey =
-            response.find(
-                "\"text\":\"",
-                pos
-            );
-
-        const std::size_t hrefKey =
-            response.find(
-                "\"href\":\"",
-                pos
-            );
-
-        if (
-            textKey ==
-            std::string::npos ||
-            hrefKey ==
-            std::string::npos
-        ) {
-            break;
+    try {
+        const json data = json::parse(response);
+        if (!data.value("ok", false)) {
+            setError(data.value("error", "Не удалось получить диалоги."));
+            return result;
         }
 
-        const std::size_t textBegin =
-            textKey + 8;
-
-        const std::size_t textEnd =
-            response.find(
-                "\"",
-                textBegin
-            );
-
-        const std::size_t hrefBegin =
-            hrefKey + 8;
-
-        const std::size_t hrefEnd =
-            response.find(
-                "\"",
-                hrefBegin
-            );
-
-        if (
-            textEnd ==
-            std::string::npos ||
-            hrefEnd ==
-            std::string::npos
-        ) {
-            break;
+        for (const auto& item : data.value("conversations", json::array())) {
+            CustoJustoConversation conversation;
+            conversation.id = item.value("id", "");
+            conversation.url = item.value("url", conversation.id);
+            conversation.title = item.value("title", "");
+            conversation.unread = item.value("unread", false);
+            if (!conversation.url.empty()) {
+                result.push_back(std::move(conversation));
+            }
         }
-
-        CustoJustoConversation conversation;
-
-        conversation.title =
-            response.substr(
-                textBegin,
-                textEnd - textBegin
-            );
-
-        conversation.url =
-            response.substr(
-                hrefBegin,
-                hrefEnd - hrefBegin
-            );
-
-        conversation.id =
-            conversation.url;
-
-        if (
-            !conversation.url.empty()
-        ) {
-            result.push_back(
-                conversation
-            );
-        }
-
-        pos =
-            std::max(
-                textEnd,
-                hrefEnd
-            ) + 1;
-
-        if (result.size() >= 200) {
-            break;
-        }
+    } catch (const std::exception&) {
+        setError("Browser worker вернул некорректный список диалогов.");
     }
 
     return result;
 }
-
 std::vector<CustoJustoMessage>
 CustoJustoClient::getMessages(
     const std::string& conversationId
 ) {
     std::vector<CustoJustoMessage> result;
-
     lastError_.clear();
 
-    if (accountId_ <= 0) {
-        setError(
-            "Не задан ID аккаунта."
-        );
-
-        return result;
-    }
-
-    if (conversationId.empty()) {
-        setError(
-            "Не задан conversationId."
-        );
-
+    if (accountId_ <= 0 || conversationId.empty()) {
+        setError("Не задан аккаунт или URL диалога.");
         return result;
     }
 
@@ -495,98 +391,40 @@ CustoJustoClient::getMessages(
     }
 
     std::ostringstream body;
-
-    body
-        << "{"
-        << "\"accountId\":"
-        << accountId_
-        << ","
-        << "\"conversationUrl\":\""
-        << jsonEscape(conversationId)
-        << "\""
-        << "}";
+    body << "{\"accountId\":" << accountId_
+         << ",\"conversationUrl\":\"" << jsonEscape(conversationId)
+         << "\"}";
 
     std::string response;
-
-    if (!post(
-            "/messages",
-            body.str(),
-            response
-        )) {
+    if (!post("/messages", body.str(), response)) {
         return result;
     }
 
-    /*
-     * Текущий browser worker возвращает:
-     *
-     * {
-     *   "ok": true,
-     *   "text": "..."
-     * }
-     *
-     * Пока сохраняем весь текст страницы
-     * одним объектом сообщения.
-     */
-
-    const std::string marker =
-        "\"text\":\"";
-
-    const std::size_t beginMarker =
-        response.find(marker);
-
-    if (
-        beginMarker ==
-        std::string::npos
-    ) {
-        return result;
-    }
-
-    const std::size_t begin =
-        beginMarker + marker.size();
-
-    std::size_t end = begin;
-
-    bool escaped = false;
-
-    while (end < response.size()) {
-        const char c =
-            response[end];
-
-        if (escaped) {
-            escaped = false;
-        }
-        else if (c == '\\') {
-            escaped = true;
-        }
-        else if (c == '"') {
-            break;
+    try {
+        const json data = json::parse(response);
+        if (!data.value("ok", false)) {
+            setError(data.value("error", "Не удалось получить сообщения."));
+            return result;
         }
 
-        ++end;
+        for (const auto& item : data.value("messages", json::array())) {
+            CustoJustoMessage message;
+            message.id = item.value("id", "");
+            message.conversationId = conversationId;
+            message.sender = item.value("sender", "");
+            message.text = item.value("text", "");
+            message.timestamp = item.value("timestamp", "");
+            message.incoming = item.value("incoming", true);
+            if (!message.id.empty() && !message.text.empty()) {
+                result.push_back(std::move(message));
+            }
+        }
+    } catch (const std::exception&) {
+        setError("Browser worker вернул некорректные сообщения.");
     }
-
-    if (
-        end <= begin ||
-        end >= response.size()
-    ) {
-        return result;
-    }
-
-    CustoJustoMessage message;
-
-    message.text =
-        response.substr(
-            begin,
-            end - begin
-        );
-
-    result.push_back(
-        message
-    );
 
     return result;
 }
-
 bool CustoJustoClient::sendMessage(
     const std::string& conversationId,
     const std::string& text
