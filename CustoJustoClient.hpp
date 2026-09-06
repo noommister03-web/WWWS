@@ -57,6 +57,10 @@ public:
 
     void setAccountId(long long accountId);
 
+    void setBaseUrl(
+        const std::string& baseUrl
+    );
+
     bool checkSession();
 
     CustoJustoLoginResult login(
@@ -129,6 +133,7 @@ private:
 
     long long accountId_ = 0;
 
+    std::string baseUrl_;
     std::string browserWorkerUrl_;
     std::string workerSharedSecret_;
 
