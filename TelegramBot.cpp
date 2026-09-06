@@ -75,6 +75,15 @@ void TelegramBot::setStopChecker(
     stopChecker_ = std::move(checker);
 }
 
+void TelegramBot::setPeriodicHandler(
+    PeriodicHandler handler,
+    int intervalSeconds
+) {
+    periodicHandler_ = std::move(handler);
+    periodicIntervalSeconds_ = std::max(5, intervalSeconds);
+    nextPeriodicRun_ = std::chrono::steady_clock::now();
+}
+
 void TelegramBot::stop() {
     running_ = false;
 }
@@ -563,6 +572,19 @@ void TelegramBot::run() {
     long long offset = 0;
 
     while (!stopRequested()) {
+        if (periodicHandler_ &&
+            std::chrono::steady_clock::now() >= nextPeriodicRun_) {
+            try {
+                periodicHandler_();
+            } catch (const std::exception& error) {
+                std::cerr << "Periodic handler error: "
+                          << error.what() << std::endl;
+            }
+
+            nextPeriodicRun_ = std::chrono::steady_clock::now() +
+                std::chrono::seconds(periodicIntervalSeconds_);
+        }
+
         std::string form =
             "timeout=" +
             urlEncode(

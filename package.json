@@ -1,0 +1,14 @@
+{
+  "name": "custojusto-browser-worker",
+  "version": "1.0.0",
+  "private": true,
+  "main": "browser_worker.js",
+  "scripts": {
+    "start": "node browser_worker.js",
+    "check": "node --check browser_worker.js"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "playwright": "1.55.0"
+  }
+}

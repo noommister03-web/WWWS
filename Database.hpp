@@ -172,3 +172,5 @@ private:
     bool hasColumn(
         const std::string& table,
         const std::string& column
+    );
+};

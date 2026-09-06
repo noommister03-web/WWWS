@@ -56,88 +56,32 @@ public:
     CustoJustoClient& operator=(const CustoJustoClient&) = delete;
 
     void setAccountId(long long accountId);
-
-    void setBaseUrl(
-        const std::string& baseUrl
-    );
-
+    void setBaseUrl(const std::string& baseUrl);
     bool checkSession();
-
-    CustoJustoLoginResult login(
-        const std::string& email,
-        const std::string& password
-    );
-
+    CustoJustoLoginResult login(const std::string& email, const std::string& password);
     void logout();
-
     bool isLoggedIn() const;
-
     std::vector<CustoJustoConversation> getConversations();
-
-    std::vector<CustoJustoMessage> getMessages(
-        const std::string& conversationUrl
-    );
-
-    bool sendMessage(
-        const std::string& conversationUrl,
-        const std::string& text
-    );
-
-    bool getListing(
-        const std::string& listingUrl,
-        CustoJustoListing& listing
-    );
-
-    bool openListing(
-        const std::string& listingUrl
-    );
-
+    std::vector<CustoJustoMessage> getMessages(const std::string& conversationUrl);
+    bool sendMessage(const std::string& conversationUrl, const std::string& text);
+    bool getListing(const std::string& listingUrl, CustoJustoListing& listing);
+    bool openListing(const std::string& listingUrl);
     std::string getLastError() const;
 
 private:
-    bool request(
-        const std::string& method,
-        const std::string& endpoint,
-        const std::string& body,
-        std::string& response
-    );
-
-    bool get(
-        const std::string& endpoint,
-        std::string& response
-    );
-
-    bool post(
-        const std::string& endpoint,
-        const std::string& body,
-        std::string& response
-    );
-
-    bool parseBool(
-        const std::string& json,
-        const std::string& key
-    ) const;
-
-    std::string parseString(
-        const std::string& json,
-        const std::string& key
-    ) const;
-
-    std::string jsonEscape(
-        const std::string& value
-    ) const;
-
-    void setError(
-        const std::string& error
-    );
+    bool request(const std::string& method, const std::string& endpoint, const std::string& body, std::string& response);
+    bool get(const std::string& endpoint, std::string& response);
+    bool post(const std::string& endpoint, const std::string& body, std::string& response);
+    bool parseBool(const std::string& json, const std::string& key) const;
+    std::string parseString(const std::string& json, const std::string& key) const;
+    std::string jsonEscape(const std::string& value) const;
+    void setError(const std::string& error);
 
     long long accountId_ = 0;
-
     std::string baseUrl_;
     std::string browserWorkerUrl_;
+    std::string workerBaseUrl_;
     std::string workerSharedSecret_;
-
     std::string lastError_;
-
     bool loggedIn_ = false;
 };
