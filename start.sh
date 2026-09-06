@@ -47,7 +47,7 @@ if [ "$MANUAL_MODE" = "true" ]; then
   password_hash="$(caddy hash-password --plaintext "$REMOTE_BROWSER_PASSWORD")"
   cat > /tmp/Caddyfile <<EOF
 :{$PUBLIC_PORT} {
-  basic_auth /* {
+  basicauth /* {
     custo $password_hash
   }
   reverse_proxy 127.0.0.1:6080
