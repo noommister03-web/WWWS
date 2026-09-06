@@ -16,6 +16,7 @@ add_executable(tg_bot
     Database.cpp
     TelegramBot.cpp
     AiEngine.cpp
+    CustoJustoClient.cpp
 )
 
 target_include_directories(tg_bot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
