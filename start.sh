@@ -15,8 +15,26 @@ websockify_pid=""
 if [ "$MANUAL_MODE" = "true" ]; then
   : "${REMOTE_BROWSER_PASSWORD:?REMOTE_BROWSER_PASSWORD is required when CJ_MANUAL_BROWSER_MODE=true}"
   export DISPLAY=:99
-  Xvfb "$DISPLAY" -screen 0 1365x900x24 -nolisten tcp &
-  xvfb_pid=$!
+
+  # A restart can inherit a stale X lock while the X server itself is still
+  # usable. Reuse the existing display; remove only a stale lock/socket pair.
+  if [ ! -S /tmp/.X11-unix/X99 ]; then
+    rm -f /tmp/.X99-lock
+    mkdir -p /tmp/.X11-unix
+    Xvfb "$DISPLAY" -screen 0 1365x900x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+    xvfb_pid=$!
+    retries=0
+    until [ -S /tmp/.X11-unix/X99 ]; do
+      retries=$((retries + 1))
+      if [ "$retries" -ge 20 ]; then
+        cat /tmp/xvfb.log >&2 || true
+        echo "Xvfb did not become ready" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+  fi
+
   openbox >/tmp/openbox.log 2>&1 &
   openbox_pid=$!
   x11vnc -display "$DISPLAY" -forever -shared -rfbport 5900 -nopw >/tmp/x11vnc.log 2>&1 &
@@ -25,6 +43,7 @@ if [ "$MANUAL_MODE" = "true" ]; then
   websockify_pid=$!
   node /app/manual_browser.js >/tmp/manual-browser.log 2>&1 &
   manual_pid=$!
+
   password_hash="$(caddy hash-password --plaintext "$REMOTE_BROWSER_PASSWORD")"
   cat > /tmp/Caddyfile <<EOF
 :{$PUBLIC_PORT} {
