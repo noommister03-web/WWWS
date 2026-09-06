@@ -7,11 +7,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
-#include <memory>
-#include <stdexcept>
 #include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -22,22 +18,11 @@ void signalHandler(int) {
     g_stop = true;
 }
 
-std::string makeWhatsAppLink(
-    const std::string& number
+bool isOwner(
+    const std::string& senderId,
+    const std::string& ownerId
 ) {
-    std::string digits;
-
-    for (char c : number) {
-        if (c >= '0' && c <= '9') {
-            digits += c;
-        }
-    }
-
-    if (digits.empty()) {
-        return "";
-    }
-
-    return "https://wa.me/" + digits;
+    return !ownerId.empty() && senderId == ownerId;
 }
 
 bool startsWith(
@@ -47,16 +32,36 @@ bool startsWith(
     return text.rfind(prefix, 0) == 0;
 }
 
-bool isOwner(
-    const std::string& senderId,
-    const std::string& ownerId
-) {
-    return !ownerId.empty() &&
-           senderId == ownerId;
+std::string trim(std::string value) {
+    while (!value.empty() &&
+           (value.front() == ' ' ||
+            value.front() == '\t' ||
+            value.front() == '\n' ||
+            value.front() == '\r')) {
+        value.erase(value.begin());
+    }
+
+    while (!value.empty() &&
+           (value.back() == ' ' ||
+            value.back() == '\t' ||
+            value.back() == '\n' ||
+            value.back() == '\r')) {
+        value.pop_back();
+    }
+
+    return value;
 }
 
-std::vector<std::vector<std::pair<std::string, std::string>>>
-mainKeyboard() {
+bool looksLikeUrl(const std::string& value) {
+    return startsWith(value, "https://") ||
+           startsWith(value, "http://");
+}
+
+std::vector<
+    std::vector<
+        std::pair<std::string, std::string>
+    >
+> mainKeyboard() {
     return {
         {
             {"💬 Диалоги", "menu_dialogues"},
@@ -72,8 +77,11 @@ mainKeyboard() {
     };
 }
 
-std::vector<std::vector<std::pair<std::string, std::string>>>
-custoJustoKeyboard() {
+std::vector<
+    std::vector<
+        std::pair<std::string, std::string>
+    >
+> custoJustoKeyboard() {
     return {
         {
             {"➕ Добавить аккаунт", "cj_add"}
@@ -93,32 +101,38 @@ custoJustoKeyboard() {
     };
 }
 
-std::vector<std::vector<std::pair<std::string, std::string>>>
-accountKeyboard(
-    long long accountId
-) {
-    const std::string id =
-        std::to_string(accountId);
+std::vector<
+    std::vector<
+        std::pair<std::string, std::string>
+    >
+> accountKeyboard(long long id) {
+    const std::string idText =
+        std::to_string(id);
 
     return {
         {
+            {"🔄 Проверить вход",
+             "cj_check:" + idText}
+        },
+        {
             {"📤 Написать по объявлению",
-             "cj_write:" + id}
+             "cj_write:" + idText}
         },
         {
             {"💬 Диалоги",
-             "cj_dialogues:" + id}
+             "cj_dialogues:" + idText}
         },
         {
             {"📋 Объявления",
-             "cj_ads:" + id}
+             "cj_ads:" + idText}
         },
         {
             {"🗑 Удалить аккаунт",
-             "cj_delete:" + id}
+             "cj_delete:" + idText}
         },
         {
-            {"⬅️ Назад", "cj_accounts"}
+            {"⬅️ Назад",
+             "cj_accounts"}
         }
     };
 }
@@ -127,22 +141,12 @@ accountKeyboard(
 
 int main() {
     try {
-        std::signal(
-            SIGINT,
-            signalHandler
-        );
+        std::signal(SIGINT, signalHandler);
+        std::signal(SIGTERM, signalHandler);
 
-        std::signal(
-            SIGTERM,
-            signalHandler
-        );
+        const Config config = Config::load();
 
-        const Config config =
-            Config::load();
-
-        Database database(
-            config.dbPath
-        );
+        Database database(config.dbPath);
 
         AiEngine ai(
             config.aiApiKey,
@@ -162,9 +166,7 @@ int main() {
             std::getenv("OWNER_TELEGRAM_ID");
 
         const std::string ownerTelegramId =
-            ownerEnv != nullptr
-                ? ownerEnv
-                : "";
+            ownerEnv ? ownerEnv : "";
 
         bot.setStopChecker([] {
             return g_stop.load();
@@ -173,14 +175,10 @@ int main() {
         bot.setCallbackHandler(
             [&](const CallbackQuery& callback) -> bool {
                 try {
-                    if (
-                        !isOwner(
-                            std::to_string(
-                                callback.senderId
-                            ),
-                            ownerTelegramId
-                        )
-                    ) {
+                    if (!isOwner(
+                            std::to_string(callback.senderId),
+                            ownerTelegramId)) {
+
                         bot.answerCallbackQuery(
                             callback.id
                         );
@@ -211,17 +209,6 @@ int main() {
                         return true;
                     }
 
-                    if (data == "menu_dialogues") {
-                        bot.sendMessage(
-                            callback.chatId,
-                            "💬 Диалоги\n\n"
-                            "Здесь будут отображаться "
-                            "входящие диалоги."
-                        );
-
-                        return true;
-                    }
-
                     if (data == "menu_custojusto") {
                         bot.sendMessageWithKeyboard(
                             callback.chatId,
@@ -233,19 +220,22 @@ int main() {
                         return true;
                     }
 
-                    if (data == "menu_ai") {
-                        std::string text =
-                            "🤖 AI\n\n"
-                            "Статус: ";
-
-                        text +=
-                            ai.enabled()
-                                ? "включён"
-                                : "выключен";
-
+                    if (data == "menu_dialogues") {
                         bot.sendMessage(
                             callback.chatId,
-                            text
+                            "💬 Диалоги\n\n"
+                            "Раздел готов."
+                        );
+
+                        return true;
+                    }
+
+                    if (data == "menu_ai") {
+                        bot.sendMessage(
+                            callback.chatId,
+                            ai.enabled()
+                                ? "🤖 AI: 🟢 включён"
+                                : "🤖 AI: 🔴 выключен"
                         );
 
                         return true;
@@ -254,10 +244,7 @@ int main() {
                     if (data == "menu_operator") {
                         bot.sendMessage(
                             callback.chatId,
-                            "👨‍💼 Оператор\n\n"
-                            "Режим оператора готов. "
-                            "Здесь можно будет управлять "
-                            "передачей диалога человеку."
+                            "👨‍💼 Режим оператора готов."
                         );
 
                         return true;
@@ -266,30 +253,40 @@ int main() {
                     if (data == "menu_settings") {
                         bot.sendMessage(
                             callback.chatId,
-                            "⚙️ Настройки\n\n"
-                            "Основные настройки CRM."
+                            "⚙️ Настройки CRM."
                         );
 
                         return true;
                     }
+
+                    /*
+                     * ADD ACCOUNT
+                     */
 
                     if (data == "cj_add") {
                         bot.sendMessage(
                             callback.chatId,
-                            "➕ Добавление аккаунта\n\n"
-                            "Отправь название и email "
-                            "в одном сообщении:\n\n"
-                            "Название | Email\n\n"
-                            "Например:\n"
-                            "CustoJusto 1 | example@email.com"
+                            "➕ Добавление CustoJusto\n\n"
+                            "1. Открой CustoJusto:\n"
+                            "https://www.custojusto.pt\n\n"
+                            "2. Войди в нужный аккаунт.\n\n"
+                            "3. Отправь сюда ссылку, "
+                            "которую хочешь привязать.\n\n"
+                            "Формат:\n"
+                            "Название | Email | Ссылка"
                         );
 
                         return true;
                     }
 
+                    /*
+                     * ACCOUNTS
+                     */
+
                     if (data == "cj_accounts") {
                         const auto accounts =
-                            database.getCustoJustoAccounts();
+                            database
+                                .getCustoJustoAccounts();
 
                         if (accounts.empty()) {
                             bot.sendMessageWithKeyboard(
@@ -305,30 +302,6 @@ int main() {
                         std::string text =
                             "📋 Мои аккаунты\n\n";
 
-                        for (
-                            const auto& account :
-                            accounts
-                        ) {
-                            text +=
-                                "🇵🇹 " +
-                                account.name +
-                                "\n";
-
-                            if (
-                                !account.email.empty()
-                            ) {
-                                text +=
-                                    "📧 " +
-                                    account.email +
-                                    "\n";
-                            }
-
-                            text +=
-                                account.enabled
-                                    ? "🟢 Включён\n\n"
-                                    : "🔴 Выключен\n\n";
-                        }
-
                         std::vector<
                             std::vector<
                                 std::pair<
@@ -338,560 +311,22 @@ int main() {
                             >
                         > buttons;
 
-                        for (
-                            const auto& account :
-                            accounts
-                        ) {
-                            buttons.push_back(
-                                {
-                                    {
-                                        "🇵🇹 " +
-                                        account.name,
-                                        "cj_account:" +
-                                        std::to_string(
-                                            account.id
-                                        )
-                                    }
-                                }
-                            );
-                        }
-
-                        buttons.push_back(
-                            {
-                                {
-                                    "⬅️ Назад",
-                                    "menu_custojusto"
-                                }
-                            }
-                        );
-
-                        bot.sendMessageWithKeyboard(
-                            callback.chatId,
-                            text,
-                            buttons
-                        );
-
-                        return true;
-                    }
-
-                    if (data == "cj_write") {
-                        bot.sendMessage(
-                            callback.chatId,
-                            "📤 Написать по объявлению\n\n"
-                            "Сначала выбери аккаунт, "
-                            "через который будет идти "
-                            "диалог."
-                        );
-
-                        return true;
-                    }
-
-                    if (data == "cj_dialogues") {
-                        bot.sendMessage(
-                            callback.chatId,
-                            "💬 Диалоги CustoJusto\n\n"
-                            "Диалоги появятся здесь "
-                            "после подключения разрешённого "
-                            "канала обмена сообщениями."
-                        );
-
-                        return true;
-                    }
-
-                    if (startsWith(data, "cj_account:")) {
-                        const std::string idText =
-                            data.substr(
-                                std::string(
-                                    "cj_account:"
-                                ).size()
-                            );
-
-                        try {
-                            const long long id =
-                                std::stoll(idText);
-
-                            const auto account =
-                                database
-                                    .getCustoJustoAccount(
-                                        id
-                                    );
-
-                            if (!account) {
-                                bot.sendMessage(
-                                    callback.chatId,
-                                    "❌ Аккаунт не найден."
-                                );
-
-                                return true;
-                            }
-
-                            std::string text =
-                                "🇵🇹 " +
-                                account->name +
-                                "\n\n";
-
+                        for (const auto& account : accounts) {
                             text +=
-                                "Email: " +
-                                account->email +
+                                "🇵🇹 " +
+                                account.name +
                                 "\n";
 
+                            if (!account.email.empty()) {
+                                text +=
+                                    "📧 " +
+                                    account.email +
+                                    "\n";
+                            }
+
                             text +=
-                                account->enabled
-                                    ? "Статус: 🟢 включён"
-                                    : "Статус: 🔴 выключен";
+                                account.loggedIn
+                                    ? "🟢 Вошёл\n"
+                                    : "🔴 Не вошёл";
 
-                            bot.sendMessageWithKeyboard(
-                                callback.chatId,
-                                text,
-                                accountKeyboard(id)
-                            );
-                        }
-                        catch (...) {
-                            bot.sendMessage(
-                                callback.chatId,
-                                "❌ Некорректный ID аккаунта."
-                            );
-                        }
-
-                        return true;
-                    }
-
-                    if (startsWith(data, "cj_delete:")) {
-                        const std::string idText =
-                            data.substr(
-                                std::string(
-                                    "cj_delete:"
-                                ).size()
-                            );
-
-                        try {
-                            const long long id =
-                                std::stoll(idText);
-
-                            const bool deleted =
-                                database
-                                    .deleteCustoJustoAccount(
-                                        id
-                                    );
-
-                            bot.sendMessageWithKeyboard(
-                                callback.chatId,
-                                deleted
-                                    ? "🗑 Аккаунт удалён."
-                                    : "❌ Не удалось удалить "
-                                      "аккаунт.",
-                                custoJustoKeyboard()
-                            );
-                        }
-                        catch (...) {
-                            bot.sendMessage(
-                                callback.chatId,
-                                "❌ Некорректный ID аккаунта."
-                            );
-                        }
-
-                        return true;
-                    }
-
-                    if (startsWith(data, "cj_write:")) {
-                        const std::string idText =
-                            data.substr(
-                                std::string(
-                                    "cj_write:"
-                                ).size()
-                            );
-
-                        try {
-                            const long long id =
-                                std::stoll(idText);
-
-                            const auto account =
-                                database
-                                    .getCustoJustoAccount(
-                                        id
-                                    );
-
-                            if (!account) {
-                                bot.sendMessage(
-                                    callback.chatId,
-                                    "❌ Аккаунт не найден."
-                                );
-
-                                return true;
-                            }
-
-                            bot.sendMessage(
-                                callback.chatId,
-                                "📤 Аккаунт: " +
-                                account->name +
-                                "\n\n"
-                                "Отправь ссылку или ID "
-                                "объявления.\n\n"
-                                "После этого можно будет "
-                                "привязать диалог именно "
-                                "к этому аккаунту."
-                            );
-                        }
-                        catch (...) {
-                            bot.sendMessage(
-                                callback.chatId,
-                                "❌ Некорректный ID аккаунта."
-                            );
-                        }
-
-                        return true;
-                    }
-
-                    if (
-                        startsWith(
-                            data,
-                            "cj_dialogues:"
-                        )
-                    ) {
-                        bot.sendMessage(
-                            callback.chatId,
-                            "💬 Диалоги выбранного "
-                            "аккаунта.\n\n"
-                            "Пока подключение транспорта "
-                            "сообщений не настроено."
-                        );
-
-                        return true;
-                    }
-
-                    if (
-                        startsWith(
-                            data,
-                            "cj_ads:"
-                        )
-                    ) {
-                        bot.sendMessage(
-                            callback.chatId,
-                            "📋 Объявления\n\n"
-                            "Список объявлений появится "
-                            "после подключения разрешённого "
-                            "источника данных."
-                        );
-
-                        return true;
-                    }
-
-                    bot.sendMessage(
-                        callback.chatId,
-                        "Неизвестное действие."
-                    );
-
-                    return true;
-                }
-                catch (
-                    const std::exception& error
-                ) {
-                    std::cerr
-                        << "Callback handler error: "
-                        << error.what()
-                        << std::endl;
-
-                    return false;
-                }
-            }
-        );
-
-        bot.setMessageHandler(
-            [&](const IncomingMessage& incoming) -> bool {
-                try {
-                    if (
-                        database.isUpdateProcessed(
-                            incoming.updateId
-                        )
-                    ) {
-                        return true;
-                    }
-
-                    if (
-                        !isOwner(
-                            incoming.senderId,
-                            ownerTelegramId
-                        )
-                    ) {
-                        bot.sendMessage(
-                            incoming.chatId,
-                            "⛔ Доступ запрещён."
-                        );
-
-                        database.markUpdateProcessed(
-                            incoming.updateId
-                        );
-
-                        return true;
-                    }
-
-                    database.saveMessage(
-                        incoming.chatId,
-                        incoming.senderId,
-                        incoming.username,
-                        incoming.text,
-                        true,
-                        incoming.updateId
-                    );
-
-                    const std::string& text =
-                        incoming.text;
-
-                    std::cout
-                        << "Incoming message from "
-                        << incoming.chatId
-                        << ": "
-                        << text
-                        << std::endl;
-
-                    std::string reply;
-
-                    if (
-                        text == "/start" ||
-                        text == "/menu"
-                    ) {
-                        bot.sendMessageWithKeyboard(
-                            incoming.chatId,
-                            "🤖 CRM\n\n"
-                            "Добро пожаловать. "
-                            "Выбери нужный раздел:",
-                            mainKeyboard()
-                        );
-
-                        database.markUpdateProcessed(
-                            incoming.updateId
-                        );
-
-                        return true;
-                    }
-
-                    if (text == "/help") {
-                        reply =
-                            "Доступные команды:\n"
-                            "/start — открыть CRM\n"
-                            "/menu — открыть CRM\n"
-                            "/help — помощь\n"
-                            "/status — состояние системы\n"
-                            "/whatsapp — WhatsApp, если настроен";
-                    }
-                    else if (text == "/status") {
-                        reply =
-                            "Система работает.\n"
-                            "AI: ";
-
-                        reply +=
-                            ai.enabled()
-                                ? "включён"
-                                : "выключен";
-                    }
-                    else if (text == "/whatsapp") {
-                        const std::string link =
-                            makeWhatsAppLink(
-                                config.whatsappNumber
-                            );
-
-                        if (link.empty()) {
-                            reply =
-                                "WhatsApp пока не настроен.";
-                        }
-                        else {
-                            reply =
-                                "WhatsApp:\n" +
-                                link;
-                        }
-                    }
-                    else if (
-                        startsWith(
-                            text,
-                            "/"
-                        )
-                    ) {
-                        reply =
-                            "Неизвестная команда. "
-                            "Используй /help.";
-                    }
-                    else if (
-                        text.find('|') !=
-                        std::string::npos
-                    ) {
-                        const std::size_t separator =
-                            text.find('|');
-
-                        std::string name =
-                            text.substr(
-                                0,
-                                separator
-                            );
-
-                        std::string email =
-                            text.substr(
-                                separator + 1
-                            );
-
-                        while (
-                            !name.empty() &&
-                            name.front() == ' '
-                        ) {
-                            name.erase(
-                                name.begin()
-                            );
-                        }
-
-                        while (
-                            !name.empty() &&
-                            name.back() == ' '
-                        ) {
-                            name.pop_back();
-                        }
-
-                        while (
-                            !email.empty() &&
-                            email.front() == ' '
-                        ) {
-                            email.erase(
-                                email.begin()
-                            );
-                        }
-
-                        while (
-                            !email.empty() &&
-                            email.back() == ' '
-                        ) {
-                            email.pop_back();
-                        }
-
-                        if (name.empty()) {
-                            reply =
-                                "❌ Не указано название "
-                                "аккаунта.";
-                        }
-                        else {
-                            const long long id =
-                                database
-                                    .addCustoJustoAccount(
-                                        name,
-                                        email
-                                    );
-
-                            reply =
-                                "✅ Аккаунт добавлен.\n\n"
-                                "ID: " +
-                                std::to_string(id) +
-                                "\n"
-                                "Название: " +
-                                name;
-
-                            if (!email.empty()) {
-                                reply +=
-                                    "\nEmail: " +
-                                    email;
-                            }
-                        }
-                    }
-                    else {
-                        if (!ai.enabled()) {
-                            reply =
-                                "AI сейчас не настроен. "
-                                "Сообщение получено.";
-                        }
-                        else {
-                            const auto history =
-                                database.getHistory(
-                                    incoming.chatId,
-                                    config.aiHistoryLimit
-                                );
-
-                            try {
-                                reply =
-                                    ai.generateReply(
-                                        history
-                                    );
-                            }
-                            catch (
-                                const std::exception& error
-                            ) {
-                                std::cerr
-                                    << "AI error: "
-                                    << error.what()
-                                    << std::endl;
-
-                                reply =
-                                    "Сообщение получено. "
-                                    "Оператор сможет ответить позже.";
-                            }
-                        }
-                    }
-
-                    if (reply.empty()) {
-                        reply =
-                            "Сообщение получено.";
-                    }
-
-                    const SendStatus status =
-                        bot.sendMessage(
-                            incoming.chatId,
-                            reply
-                        );
-
-                    if (
-                        status ==
-                        SendStatus::TemporaryFailure
-                    ) {
-                        return false;
-                    }
-
-                    if (
-                        status ==
-                        SendStatus::Success
-                    ) {
-                        database.saveMessage(
-                            incoming.chatId,
-                            "bot",
-                            "",
-                            reply,
-                            false
-                        );
-                    }
-
-                    database.markUpdateProcessed(
-                        incoming.updateId
-                    );
-
-                    return true;
-                }
-                catch (
-                    const std::exception& error
-                ) {
-                    std::cerr
-                        << "Message handler error: "
-                        << error.what()
-                        << std::endl;
-
-                    return false;
-                }
-            }
-        );
-
-        std::cout
-            << "Application started."
-            << std::endl;
-
-        bot.run();
-
-        std::cout
-            << "Application stopped."
-            << std::endl;
-
-        return 0;
-    }
-    catch (
-        const std::exception& error
-    ) {
-        std::cerr
-            << "Fatal error: "
-            << error.what()
-            << std::endl;
-
-        return 1;
-    }
-}
+                            if (!account.enabled) {
