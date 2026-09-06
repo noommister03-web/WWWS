@@ -94,7 +94,9 @@ int main() {
                 : "https://openrouter.ai/api/v1",
             aiModel != nullptr
                 ? aiModel
-                : "openrouter/free"
+                : "openrouter/free",
+            "Ты полезный русскоязычный ассистент для Telegram CRM. Отвечай кратко и по делу.",
+            30
         );
 
         /*
@@ -727,7 +729,7 @@ int main() {
 
                     const std::string answer =
                         ai.generateReply(
-                            message.text
+                            db.getHistory(message.chatId, 20)
                         );
 
                     if (!answer.empty()) {
