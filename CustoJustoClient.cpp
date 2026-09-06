@@ -77,6 +77,9 @@ CustoJustoClient::CustoJustoClient() {
     browserWorkerUrl_ =
         getEnv("BROWSER_WORKER_URL");
 
+    workerSharedSecret_ =
+        getEnv("BROWSER_WORKER_SHARED_SECRET");
+
     if (browserWorkerUrl_.empty()) {
         browserWorkerUrl_ =
             "http://localhost:3001";
@@ -810,6 +813,16 @@ bool CustoJustoClient::request(
             headers,
             "Accept: application/json"
         );
+
+    if (!workerSharedSecret_.empty()) {
+        const std::string workerSecretHeader =
+            "X-Worker-Secret: " + workerSharedSecret_;
+
+        headers = curl_slist_append(
+            headers,
+            workerSecretHeader.c_str()
+        );
+    }
 
     curl_easy_setopt(
         curl,
