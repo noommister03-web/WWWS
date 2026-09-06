@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=worker-deps /worker/node_modules /app/node_modules
 COPY --from=worker-deps /ms-playwright /ms-playwright
+# Let Playwright install the exact OS dependency set for this Chromium release.
+RUN npx playwright install-deps chromium
 COPY --from=builder /app/build/tg_bot /app/tg_bot
 COPY browser_worker.js package.json start.sh ./
 RUN mkdir -p /app/data/custojusto/profiles \
