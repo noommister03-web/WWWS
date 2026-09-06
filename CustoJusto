@@ -1,0 +1,125 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <optional>
+
+struct CustoJustoLoginResult {
+    bool success = false;
+    bool requiresCaptcha = false;
+    bool requiresTwoFactor = false;
+    std::string message;
+};
+
+struct CustoJustoConversation {
+    std::string id;
+    std::string title;
+    std::string listingUrl;
+    std::string lastMessage;
+    std::string lastMessageAt;
+    bool unread = false;
+};
+
+struct CustoJustoMessage {
+    std::string id;
+    std::string conversationId;
+    std::string text;
+    std::string senderName;
+    std::string createdAt;
+    bool incoming = true;
+};
+
+class CustoJustoClient {
+public:
+    CustoJustoClient();
+    ~CustoJustoClient();
+
+    CustoJustoClient(const CustoJustoClient&) = delete;
+    CustoJustoClient& operator=(const CustoJustoClient&) = delete;
+
+    void setAccountId(long long accountId);
+    void setBaseUrl(const std::string& baseUrl);
+
+    CustoJustoLoginResult login(
+        const std::string& email,
+        const std::string& password
+    );
+
+    bool checkSession();
+
+    void logout();
+
+    bool isLoggedIn() const;
+
+    std::vector<CustoJustoConversation> getConversations();
+
+    std::vector<CustoJustoMessage> getMessages(
+        const std::string& conversationId
+    );
+
+    bool sendMessage(
+        const std::string& conversationId,
+        const std::string& text
+    );
+
+    bool openListing(
+        const std::string& listingUrl
+    );
+
+    std::string getLastError() const;
+
+private:
+    long long accountId_ = 0;
+
+    std::string baseUrl_;
+    std::string cookieFile_;
+    std::string lastError_;
+
+    bool loggedIn_ = false;
+
+    void setError(const std::string& error);
+
+    bool ensureCookieStorage();
+
+    bool performRequest(
+        const std::string& method,
+        const std::string& url,
+        const std::string& body,
+        std::string& response
+    );
+
+    bool performGet(
+        const std::string& url,
+        std::string& response
+    );
+
+    bool performPost(
+        const std::string& url,
+        const std::string& body,
+        std::string& response
+    );
+
+    static std::string urlEncode(
+        const std::string& value
+    );
+
+    static std::string trim(
+        const std::string& value
+    );
+
+    static bool looksLikeLoginPage(
+        const std::string& html
+    );
+
+    static bool looksLikeLoggedInPage(
+        const std::string& html
+    );
+
+    static bool looksLikeCaptcha(
+        const std::string& html
+    );
+
+    static bool looksLikeTwoFactor(
+        const std::string& html
+    );
+};
