@@ -1,14 +1,12 @@
 const express = require("express");
 const { chromium } = require("playwright");
 const crypto = require("crypto");
-const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 
 const app = express();
 app.use(express.json({limit: "1mb"}));
 
-// Railway sets PORT for public web services. This worker is private to the bot container.
 const PORT = Number(process.env.BROWSER_WORKER_PORT || 3001);
 const WORKER_SHARED_SECRET = process.env.BROWSER_WORKER_SHARED_SECRET || "";
 const BASE = process.env.CJ_BASE_URL || "https://www.custojusto.pt";
@@ -19,212 +17,57 @@ function safeAccountId(value) {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error("Invalid account id");
   return id;
 }
-
-function accountProfileDir(accountId) {
-  return path.join(PROFILE_ROOT, safeAccountId(accountId));
-}
-
+function accountProfileDir(accountId) { return path.join(PROFILE_ROOT, safeAccountId(accountId)); }
 function requireAuth(req, res, next) {
   if (!WORKER_SHARED_SECRET) return res.status(503).json({error: "BROWSER_WORKER_SHARED_SECRET is not configured"});
   const supplied = req.get("x-worker-secret") || "";
-  const expected = Buffer.from(WORKER_SHARED_SECRET);
-  const actual = Buffer.from(supplied);
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
-    return res.status(401).json({error: "Unauthorized"});
-  }
+  const expected = Buffer.from(WORKER_SHARED_SECRET), actual = Buffer.from(supplied);
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return res.status(401).json({error: "Unauthorized"});
   next();
 }
-
-function toAbsoluteUrl(href) {
-  if (!href) return "";
-  try { return new URL(href, BASE).toString(); } catch { return ""; }
-}
-
+function toAbsoluteUrl(href) { try { return href ? new URL(href, BASE).toString() : ""; } catch { return ""; } }
 async function openPage(accountId) {
   const profileDir = accountProfileDir(accountId);
-  await fsp.mkdir(profileDir, {recursive: true});
-  const context = await chromium.launchPersistentContext(profileDir, {
-    // A cold Chromium start on Railway can exceed Playwright's 30-second default.
-    timeout: Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS || 120000),
-    headless: process.env.CJ_HEADLESS !== "false",
-    viewport: {width: 1365, height: 900},
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
-  });
-  const pages = context.pages();
-  const page = pages[0] || await context.newPage();
+  await fsp.mkdir(profileDir, {recursive:true});
+  const context = await chromium.launchPersistentContext(profileDir, {timeout:Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS || 120000), headless:process.env.CJ_HEADLESS !== "false", viewport:{width:1365,height:900}, args:["--no-sandbox","--disable-dev-shm-usage"]});
+  const page = context.pages()[0] || await context.newPage();
   page.setDefaultTimeout(Number(process.env.CJ_ACTION_TIMEOUT_MS || 60000));
-  return {context, page};
+  return {context,page};
 }
-
-async function closeContext(context) {
-  try { await context.close(); } catch (_) {}
-}
-
+async function closeContext(context) { try { await context.close(); } catch (_) {} }
 async function isLoggedIn(page) {
-  const url = page.url();
-  if (/login|entrar|signin/i.test(url)) return false;
-  const loggedOut = await page.locator('a[href*="login"], a[href*="entrar"], button:has-text("Entrar")').count();
-  const accountUi = await page.locator('a[href*="conta"], a[href*="account"], a[href*="mensagens"], a[href*="messages"]').count();
-  return accountUi > 0 && loggedOut === 0;
+  if (/login|entrar|signin/i.test(page.url())) return false;
+  return (await page.locator('a[href*="conta"], a[href*="account"], a[href*="mensagens"], a[href*="messages"]').count()) > 0 && (await page.locator('a[href*="login"], a[href*="entrar"], button:has-text("Entrar")').count()) === 0;
 }
-
-async function login(page, email, password) {
-  await page.goto(BASE, {waitUntil: "domcontentloaded"});
-  if (await isLoggedIn(page)) return {ok: true, alreadyLoggedIn: true};
-
-  const selectors = [
-    'a[href*="login"]', 'a[href*="entrar"]', 'button:has-text("Entrar")', 'text=/entrar|login/i'
-  ];
-  for (const selector of selectors) {
-    const candidate = page.locator(selector).first();
-    if (await candidate.count()) {
-      try { await candidate.click(); await page.waitForTimeout(700); break; } catch (_) {}
-    }
+async function dismissCookieDialog(page) {
+  for (const selector of ['#CybotCookiebotDialogBodyButtonDecline','#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll','button:has-text("Aceitar e fechar")']) {
+    const button=page.locator(selector).first();
+    if (await button.isVisible().catch(()=>false)) { await button.click().catch(()=>{}); return; }
   }
-
-  // CustoJusto uses #username rather than an input[type=email].
-  const emailField = page.locator('#username, input[name="username"], input[type="email"]').first();
-  const passwordField = page.locator('#password, input[name="password"], input[type="password"]').first();
-  await emailField.waitFor({state: "visible"});
-  await emailField.fill(email);
-  await passwordField.fill(password);
-  const submit = page.locator('form button[type="submit"], button:has-text("Entrar")').last();
-  await submit.click();
+}
+async function login(page,email,password) {
+  await page.goto(new URL('/login',BASE).toString(),{waitUntil:"domcontentloaded",timeout:Number(process.env.CJ_NAVIGATION_TIMEOUT_MS || 60000)});
+  await dismissCookieDialog(page);
+  const emailField=page.locator('#username, input[name="username"], input[type="email"]').first();
+  const passwordField=page.locator('#password, input[name="password"], input[type="password"]').first();
+  await emailField.waitFor({state:"visible"});
+  await emailField.fill(email); await passwordField.fill(password);
+  await page.locator('form button[type="submit"], button:has-text("Entrar")').last().click();
   await page.waitForTimeout(1500);
-
-  if (await isLoggedIn(page)) return {ok: true};
-  const url = page.url();
-  const body = (await page.locator("body").innerText().catch(() => "")).slice(0, 1000);
-  return {ok: false, error: "Login was not confirmed", url, pageText: body};
+  if (await isLoggedIn(page)) return {ok:true};
+  return {ok:false,error:"Login was not confirmed",url:page.url(),pageText:(await page.locator("body").innerText().catch(()=>"")).slice(0,1000)};
 }
-
-async function findConversationOrListing(page, listingUrl) {
-  await page.goto(listingUrl, {waitUntil: "domcontentloaded"});
-  const candidates = [
-    'a:has-text("Contactar")', 'button:has-text("Contactar")',
-    'a:has-text("Mensagem")', 'button:has-text("Mensagem")',
-    'a[href*="mensagens"]', 'a[href*="messages"]'
-  ];
-  for (const selector of candidates) {
-    const el = page.locator(selector).first();
-    if (await el.count()) {
-      await el.click();
-      await page.waitForTimeout(700);
-      return;
-    }
-  }
+async function findConversationOrListing(page,listingUrl) {
+  await page.goto(listingUrl,{waitUntil:"domcontentloaded"});
+  for(const selector of ['a:has-text("Contactar")','button:has-text("Contactar")','a:has-text("Mensagem")','button:has-text("Mensagem")','a[href*="mensagens"]','a[href*="messages"]']) {const el=page.locator(selector).first();if(await el.count()){await el.click();await page.waitForTimeout(700);return;}}
   throw new Error("Could not find a contact/message action on this listing");
 }
-
-async function sendMessage(page, listingUrl, message) {
-  await findConversationOrListing(page, listingUrl);
-  const messageBox = page.locator('textarea, [contenteditable="true"], input[name*="message" i], textarea[name*="message" i]').first();
-  await messageBox.fill(message);
-  const send = page.locator('button[type="submit"], button:has-text("Enviar"), button:has-text("Send")').first();
-  await send.click();
-  await page.waitForTimeout(500);
-  return {ok: true, url: page.url()};
-}
-
-async function extractMessages(page) {
-  const rows = await page.locator('a[href*="mensagens"], a[href*="messages"], a[href*="conversa"], a[href*="conversation"]').evaluateAll(nodes => nodes.map((node, index) => {
-    const href = node.getAttribute("href") || "";
-    const text = (node.innerText || node.textContent || "").trim().replace(/\s+/g, " ");
-    return {index, href, text};
-  }).filter(x => x.href || x.text));
-  const unique = new Map();
-  for (const row of rows) {
-    const key = row.href || row.text;
-    if (key && !unique.has(key)) unique.set(key, row);
-  }
-  return [...unique.values()].slice(0, 100).map(row => ({...row, href: toAbsoluteUrl(row.href)}));
-}
-
-async function collectConversation(page, conversationUrl) {
-  await page.goto(conversationUrl, {waitUntil: "domcontentloaded"});
-  const messages = await page.locator('article, [data-message-id], .message, [class*="message"]').evaluateAll(nodes => nodes.map((node, index) => {
-    const text = (node.innerText || node.textContent || "").trim().replace(/\s+/g, " ");
-    const cls = node.className || "";
-    return {index, text, cls: String(cls)};
-  }).filter(m => m.text));
-  if (messages.length) return messages.slice(-50);
-  const body = (await page.locator("body").innerText().catch(() => "")).trim();
-  return body ? [{index: 0, text: body.slice(-8000), cls: "body-fallback"}] : [];
-}
-
-app.get("/health", (_, res) => res.json({ok: true}));
-
-app.post("/login", requireAuth, async (req, res) => {
-  const {accountId, email, password} = req.body || {};
-  if (!accountId || !email || !password) return res.status(400).json({error: "accountId, email and password are required"});
-  let context;
-  try {
-    ({context, page} = await openPage(accountId));
-    const result = await login(page, String(email), String(password));
-    res.status(result.ok ? 200 : 401).json(result);
-  } catch (error) {
-    res.status(500).json({error: error.message});
-  } finally {
-    if (context) await closeContext(context);
-  }
-});
-
-app.post("/status", requireAuth, async (req, res) => {
-  const {accountId} = req.body || {};
-  if (!accountId) return res.status(400).json({error: "accountId is required"});
-  let context;
-  try {
-    const opened = await openPage(accountId);
-    context = opened.context;
-    await opened.page.goto(BASE, {waitUntil: "domcontentloaded"});
-    res.json({ok: true, loggedIn: await isLoggedIn(opened.page), url: opened.page.url()});
-  } catch (error) {
-    res.status(500).json({error: error.message});
-  } finally {
-    if (context) await closeContext(context);
-  }
-});
-
-app.post("/send", requireAuth, async (req, res) => {
-  const {accountId, listingUrl, message} = req.body || {};
-  if (!accountId || !listingUrl || !message) return res.status(400).json({error: "accountId, listingUrl and message are required"});
-  let context;
-  try {
-    const opened = await openPage(accountId);
-    context = opened.context;
-    if (!await isLoggedIn(opened.page)) return res.status(401).json({error: "CustoJusto session is not logged in"});
-    res.json(await sendMessage(opened.page, String(listingUrl), String(message)));
-  } catch (error) {
-    res.status(500).json({error: error.message});
-  } finally {
-    if (context) await closeContext(context);
-  }
-});
-
-app.post("/incoming", requireAuth, async (req, res) => {
-  const {accountId} = req.body || {};
-  if (!accountId) return res.status(400).json({error: "accountId is required"});
-  let context;
-  try {
-    const opened = await openPage(accountId);
-    context = opened.context;
-    if (!await isLoggedIn(opened.page)) return res.status(401).json({error: "CustoJusto session is not logged in"});
-    await opened.page.goto(new URL("/mensagens", BASE).toString(), {waitUntil: "domcontentloaded"});
-    const conversations = await extractMessages(opened.page);
-    const result = [];
-    for (const conversation of conversations.slice(0, 20)) {
-      if (!conversation.href) continue;
-      const messages = await collectConversation(opened.page, conversation.href);
-      result.push({conversation, messages});
-    }
-    res.json({ok: true, conversations: result});
-  } catch (error) {
-    res.status(500).json({error: error.message});
-  } finally {
-    if (context) await closeContext(context);
-  }
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`CustoJusto browser worker listening on ${PORT}`);
-});
+async function sendMessage(page,listingUrl,message) { await findConversationOrListing(page,listingUrl); await page.locator('textarea, [contenteditable="true"], input[name*="message" i], textarea[name*="message" i]').first().fill(message); await page.locator('button[type="submit"], button:has-text("Enviar"), button:has-text("Send")').first().click(); await page.waitForTimeout(500); return {ok:true,url:page.url()}; }
+async function extractMessages(page) { const rows=await page.locator('a[href*="mensagens"], a[href*="messages"], a[href*="conversa"], a[href*="conversation"]').evaluateAll(nodes=>nodes.map((node,index)=>({index,href:node.getAttribute("href")||"",text:(node.innerText||node.textContent||"").trim().replace(/\s+/g," ")})).filter(x=>x.href||x.text)); const unique=new Map();for(const row of rows){const key=row.href||row.text;if(key&&!unique.has(key))unique.set(key,row);}return [...unique.values()].slice(0,100).map(row=>({...row,href:toAbsoluteUrl(row.href)})); }
+async function collectConversation(page,conversationUrl) { await page.goto(conversationUrl,{waitUntil:"domcontentloaded"}); const messages=await page.locator('article, [data-message-id], .message, [class*="message"]').evaluateAll(nodes=>nodes.map((node,index)=>({index,text:(node.innerText||node.textContent||"").trim().replace(/\s+/g," "),cls:String(node.className||"")})).filter(m=>m.text)); if(messages.length)return messages.slice(-50);const body=(await page.locator("body").innerText().catch(()=>"")).trim();return body?[{index:0,text:body.slice(-8000),cls:"body-fallback"}]:[]; }
+app.get("/health",(_,res)=>res.json({ok:true}));
+app.post("/login",requireAuth,async(req,res)=>{const {accountId,email,password}=req.body||{};if(!accountId||!email||!password)return res.status(400).json({error:"accountId, email and password are required"});let context;try{const opened=await openPage(accountId);context=opened.context;const result=await login(opened.page,String(email),String(password));res.status(result.ok?200:401).json(result);}catch(error){res.status(500).json({error:error.message});}finally{if(context)await closeContext(context);}});
+app.post("/status",requireAuth,async(req,res)=>{const {accountId}=req.body||{};if(!accountId)return res.status(400).json({error:"accountId is required"});let context;try{const opened=await openPage(accountId);context=opened.context;await opened.page.goto(BASE,{waitUntil:"domcontentloaded"});res.json({ok:true,loggedIn:await isLoggedIn(opened.page),url:opened.page.url()});}catch(error){res.status(500).json({error:error.message});}finally{if(context)await closeContext(context);}});
+app.post("/send",requireAuth,async(req,res)=>{const {accountId,listingUrl,message}=req.body||{};if(!accountId||!listingUrl||!message)return res.status(400).json({error:"accountId, listingUrl and message are required"});let context;try{const opened=await openPage(accountId);context=opened.context;if(!await isLoggedIn(opened.page))return res.status(401).json({error:"CustoJusto session is not logged in"});res.json(await sendMessage(opened.page,String(listingUrl),String(message)));}catch(error){res.status(500).json({error:error.message});}finally{if(context)await closeContext(context);}});
+app.post("/incoming",requireAuth,async(req,res)=>{const {accountId}=req.body||{};if(!accountId)return res.status(400).json({error:"accountId is required"});let context;try{const opened=await openPage(accountId);context=opened.context;if(!await isLoggedIn(opened.page))return res.status(401).json({error:"CustoJusto session is not logged in"});await opened.page.goto(new URL("/mensagens",BASE).toString(),{waitUntil:"domcontentloaded"});const conversations=await extractMessages(opened.page);const result=[];for(const conversation of conversations.slice(0,20)){if(conversation.href)result.push({conversation,messages:await collectConversation(opened.page,conversation.href)});}res.json({ok:true,conversations:result});}catch(error){res.status(500).json({error:error.message});}finally{if(context)await closeContext(context);}});
+app.listen(PORT,"0.0.0.0",()=>console.log(`CustoJusto browser worker listening on ${PORT}`));
