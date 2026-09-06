@@ -23,24 +23,18 @@ if [ "$MANUAL_MODE" = "true" ]; then
   vnc_pid=$!
   websockify --web=/usr/share/novnc 127.0.0.1:6080 127.0.0.1:5900 >/tmp/websockify.log 2>&1 &
   websockify_pid=$!
-
-  # The headed browser has exclusive access to the persistent CustoJusto
-  # profile while the account owner completes Turnstile and login.
   node /app/manual_browser.js >/tmp/manual-browser.log 2>&1 &
   manual_pid=$!
-
   password_hash="$(caddy hash-password --plaintext "$REMOTE_BROWSER_PASSWORD")"
   cat > /tmp/Caddyfile <<EOF
 :{$PUBLIC_PORT} {
-  basicauth /* {
+  basic_auth /* {
     custo $password_hash
   }
   reverse_proxy 127.0.0.1:6080
 }
 EOF
 else
-  # Normal mode: only the private worker uses the saved profile. Railway's
-  # public endpoint returns a harmless health response and cannot reach it.
   node /app/browser_worker.js >/tmp/browser-worker.log 2>&1 &
   worker_pid=$!
   cat > /tmp/Caddyfile <<EOF
@@ -52,7 +46,6 @@ fi
 
 caddy run --config /tmp/Caddyfile --adapter caddyfile >/tmp/caddy.log 2>&1 &
 caddy_pid=$!
-
 cleanup() {
   kill "$caddy_pid" "$manual_pid" "$worker_pid" "$websockify_pid" "$vnc_pid" "$openbox_pid" "$xvfb_pid" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -70,5 +63,4 @@ if [ "$MANUAL_MODE" != "true" ]; then
     sleep 1
   done
 fi
-
 exec /app/tg_bot
