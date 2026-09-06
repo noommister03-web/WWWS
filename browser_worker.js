@@ -265,6 +265,24 @@ async function send(accountId, conversationUrl, text) {
     'input[type="text"]'
   ];
 
+  // A listing page needs one extra click before its message composer exists.
+  if (!(await page.locator(inputSelectors.join(",")).count())) {
+    for (const selector of [
+      'a:has-text("Contactar")', 'button:has-text("Contactar")',
+      'a:has-text("Enviar mensagem")', 'button:has-text("Enviar mensagem")',
+      'a:has-text("Mensagem")', 'button:has-text("Mensagem")'
+    ]) {
+      const el = page.locator(selector).first();
+      if (await el.count()) {
+        try {
+          await el.click({timeout:5000});
+          await page.waitForTimeout(700);
+          break;
+        } catch (_) {}
+      }
+    }
+  }
+
   let filled = false;
   for (const selector of inputSelectors) {
     const el = page.locator(selector).last();
@@ -299,10 +317,13 @@ async function send(accountId, conversationUrl, text) {
 app.get("/health", (_, res) => res.json({ok:true}));
 
 app.use((req, res, next) => {
-  if (!WORKER_SHARED_SECRET || req.get("x-worker-secret") === WORKER_SHARED_SECRET) {
-    return next();
+  if (!WORKER_SHARED_SECRET) {
+    return res.status(503).json({ok:false, error:"worker_secret_not_configured"});
   }
-  return res.status(401).json({ok:false, error:"unauthorized"});
+  if (req.get("x-worker-secret") !== WORKER_SHARED_SECRET) {
+    return res.status(401).json({ok:false, error:"unauthorized"});
+  }
+  return next();
 });
 
 app.post("/login", async (req,res) => {
