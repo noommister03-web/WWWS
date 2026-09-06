@@ -4,6 +4,7 @@
 #include "TelegramBot.hpp"
 
 #include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
