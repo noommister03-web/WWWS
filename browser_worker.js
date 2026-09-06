@@ -1,381 +1,223 @@
 const express = require("express");
-const fs = require("fs");
-const path = require("path");
 const { chromium } = require("playwright");
+const crypto = require("crypto");
+const fs = require("fs");
+const fsp = require("fs/promises");
+const path = require("path");
 
 const app = express();
 app.use(express.json({limit: "1mb"}));
 
-const PORT = Number(process.env.PORT || process.env.BROWSER_WORKER_PORT || 3001);
+// Railway sets PORT for public web services. This worker is private to the bot container.
+const PORT = Number(process.env.BROWSER_WORKER_PORT || 3001);
 const WORKER_SHARED_SECRET = process.env.BROWSER_WORKER_SHARED_SECRET || "";
 const BASE = process.env.CJ_BASE_URL || "https://www.custojusto.pt";
 const PROFILE_ROOT = process.env.CJ_PROFILE_ROOT || path.join(process.cwd(), "data", "custojusto", "profiles");
 
-fs.mkdirSync(PROFILE_ROOT, {recursive: true});
-
-const contexts = new Map();
-
-function profileDir(accountId) {
-  const safe = String(accountId).replace(/[^0-9A-Za-z_-]/g, "_");
-  const dir = path.join(PROFILE_ROOT, safe);
-  fs.mkdirSync(dir, {recursive: true});
-  return dir;
+function safeAccountId(value) {
+  const id = String(value || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error("Invalid account id");
+  return id;
 }
 
-async function getContext(accountId) {
-  if (contexts.has(accountId)) return contexts.get(accountId);
-
-  const context = await chromium.launchPersistentContext(profileDir(accountId), {
-    headless: true,
-    viewport: {width: 1440, height: 1000},
-    locale: "pt-PT",
-    timezoneId: "Europe/Lisbon",
-    serviceWorkers: "allow",
-    args: ["--disable-dev-shm-usage"]
-  });
-
-  contexts.set(accountId, context);
-  return context;
+function accountProfileDir(accountId) {
+  return path.join(PROFILE_ROOT, safeAccountId(accountId));
 }
 
-async function getPage(context) {
-  const pages = context.pages();
-  return pages.length ? pages[0] : await context.newPage();
-}
-
-function pageText(page) {
-  return page.locator("body").innerText({timeout: 5000}).catch(() => "");
-}
-
-async function detectState(page) {
-  const text = (await pageText(page)).toLowerCase();
-  const url = page.url().toLowerCase();
-
-  const captcha =
-    text.includes("captcha") ||
-    text.includes("recaptcha") ||
-    url.includes("captcha");
-
-  const twoFactor =
-    text.includes("cÃ³digo de verificaÃ§Ã£o") ||
-    text.includes("codigo de verificacao") ||
-    text.includes("two-factor") ||
-    text.includes("2fa") ||
-    text.includes("verificaÃ§Ã£o") && text.includes("sms");
-
-  if (captcha) return {state:"captcha_required", loggedIn:false};
-  if (twoFactor) return {state:"two_factor_required", loggedIn:false};
-
-  const loginWords = ["iniciar sessÃ£o", "iniciar sessao", "entrar", "login"];
-  const hasLogin = loginWords.some(x => text.includes(x));
-  const hasChat = text.includes("chat") || text.includes("mensagens");
-  const accountHints =
-    text.includes("terminar sessÃ£o") ||
-    text.includes("terminar sessao") ||
-    text.includes("logout") ||
-    text.includes("minha conta") ||
-    text.includes("meus anÃºncios") ||
-    text.includes("meus anuncios");
-
-  if (hasChat && (accountHints || !hasLogin)) {
-    return {state:"logged_in", loggedIn:true};
+function requireAuth(req, res, next) {
+  if (!WORKER_SHARED_SECRET) return res.status(503).json({error: "BROWSER_WORKER_SHARED_SECRET is not configured"});
+  const supplied = req.get("x-worker-secret") || "";
+  const expected = Buffer.from(WORKER_SHARED_SECRET);
+  const actual = Buffer.from(supplied);
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+    return res.status(401).json({error: "Unauthorized"});
   }
-
-  return {state:"login_required", loggedIn:false};
+  next();
 }
 
-async function clickLoginIfNeeded(page) {
-  const selectors = [
-    'a:has-text("Entrar")',
-    'button:has-text("Entrar")',
-    'a:has-text("Iniciar sessÃ£o")',
-    'button:has-text("Iniciar sessÃ£o")',
-    'a:has-text("Login")',
-    'button:has-text("Login")'
-  ];
+function toAbsoluteUrl(href) {
+  if (!href) return "";
+  try { return new URL(href, BASE).toString(); } catch { return ""; }
+}
 
+async function openPage(accountId) {
+  const profileDir = accountProfileDir(accountId);
+  await fsp.mkdir(profileDir, {recursive: true});
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: process.env.CJ_HEADLESS !== "false",
+    viewport: {width: 1365, height: 900},
+    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+  });
+  const pages = context.pages();
+  const page = pages[0] || await context.newPage();
+  page.setDefaultTimeout(Number(process.env.CJ_ACTION_TIMEOUT_MS || 30000));
+  return {context, page};
+}
+
+async function closeContext(context) {
+  try { await context.close(); } catch (_) {}
+}
+
+async function isLoggedIn(page) {
+  const url = page.url();
+  if (/login|entrar|signin/i.test(url)) return false;
+  const loggedOut = await page.locator('a[href*="login"], a[href*="entrar"], button:has-text("Entrar")').count();
+  const accountUi = await page.locator('a[href*="conta"], a[href*="account"], a[href*="mensagens"], a[href*="messages"]').count();
+  return accountUi > 0 && loggedOut === 0;
+}
+
+async function login(page, email, password) {
+  await page.goto(BASE, {waitUntil: "domcontentloaded"});
+  if (await isLoggedIn(page)) return {ok: true, alreadyLoggedIn: true};
+
+  const selectors = [
+    'a[href*="login"]', 'a[href*="entrar"]', 'button:has-text("Entrar")', 'text=/entrar|login/i'
+  ];
   for (const selector of selectors) {
-    const el = page.locator(selector).first();
-    if (await el.count()) {
-      try {
-        await el.click({timeout: 4000});
-        await page.waitForLoadState("domcontentloaded", {timeout: 10000}).catch(()=>{});
-        return true;
-      } catch (_) {}
+    const candidate = page.locator(selector).first();
+    if (await candidate.count()) {
+      try { await candidate.click(); await page.waitForTimeout(700); break; } catch (_) {}
     }
   }
-  return false;
+
+  const emailField = page.locator('input[type="email"], input[name*="email" i], input[id*="email" i]').first();
+  const passwordField = page.locator('input[type="password"]').first();
+  await emailField.fill(email);
+  await passwordField.fill(password);
+  const submit = page.locator('button[type="submit"], input[type="submit"], button:has-text("Entrar"), button:has-text("Login")').first();
+  await submit.click();
+  await page.waitForTimeout(1500);
+
+  if (await isLoggedIn(page)) return {ok: true};
+  const url = page.url();
+  const body = (await page.locator("body").innerText().catch(() => "")).slice(0, 1000);
+  return {ok: false, error: "Login was not confirmed", url, pageText: body};
 }
 
-async function fillFirst(page, candidates, value) {
+async function findConversationOrListing(page, listingUrl) {
+  await page.goto(listingUrl, {waitUntil: "domcontentloaded"});
+  const candidates = [
+    'a:has-text("Contactar")', 'button:has-text("Contactar")',
+    'a:has-text("Mensagem")', 'button:has-text("Mensagem")',
+    'a[href*="mensagens"]', 'a[href*="messages"]'
+  ];
   for (const selector of candidates) {
     const el = page.locator(selector).first();
     if (await el.count()) {
-      try {
-        await el.fill(value, {timeout: 4000});
-        return true;
-      } catch (_) {}
+      await el.click();
+      await page.waitForTimeout(700);
+      return;
     }
   }
-  return false;
+  throw new Error("Could not find a contact/message action on this listing");
 }
 
-async function doLogin(accountId, email, password, baseUrl) {
-  const context = await getContext(accountId);
-  const page = await getPage(context);
-
-  await page.goto(baseUrl || BASE, {waitUntil:"domcontentloaded", timeout:30000});
-  const before = await detectState(page);
-  if (before.loggedIn) return before;
-
-  await clickLoginIfNeeded(page);
-
-  const emailOk = await fillFirst(page, [
-    'input[type="email"]',
-    'input[name="email"]',
-    'input[autocomplete="username"]',
-    'input[placeholder*="email" i]'
-  ], email);
-
-  const passOk = await fillFirst(page, [
-    'input[type="password"]',
-    'input[name="password"]',
-    'input[autocomplete="current-password"]'
-  ], password);
-
-  if (!emailOk || !passOk) {
-    return {state:"login_form_not_found", loggedIn:false};
-  }
-
-  const buttons = [
-    'button[type="submit"]',
-    'input[type="submit"]',
-    'button:has-text("Entrar")',
-    'button:has-text("Login")',
-    'button:has-text("Iniciar sessÃ£o")'
-  ];
-
-  let clicked = false;
-  for (const selector of buttons) {
-    const el = page.locator(selector).first();
-    if (await el.count()) {
-      try {
-        await el.click({timeout:5000});
-        clicked = true;
-        break;
-      } catch (_) {}
-    }
-  }
-
-  if (!clicked) return {state:"login_button_not_found", loggedIn:false};
-
-  await page.waitForLoadState("domcontentloaded", {timeout:15000}).catch(()=>{});
-  await page.waitForTimeout(1500);
-
-  return await detectState(page);
+async function sendMessage(page, listingUrl, message) {
+  await findConversationOrListing(page, listingUrl);
+  const messageBox = page.locator('textarea, [contenteditable="true"], input[name*="message" i], textarea[name*="message" i]').first();
+  await messageBox.fill(message);
+  const send = page.locator('button[type="submit"], button:has-text("Enviar"), button:has-text("Send")').first();
+  await send.click();
+  await page.waitForTimeout(500);
+  return {ok: true, url: page.url()};
 }
 
-async function openChat(page) {
-  const selectors = [
-    'a:has-text("Chat")',
-    'button:has-text("Chat")',
-    'a:has-text("Mensagens")',
-    'button:has-text("Mensagens")',
-    '[href*="chat"]',
-    '[href*="mensag"]'
-  ];
-
-  for (const selector of selectors) {
-    const el = page.locator(selector).first();
-    if (await el.count()) {
-      try {
-        await el.click({timeout:5000});
-        await page.waitForLoadState("domcontentloaded", {timeout:10000}).catch(()=>{});
-        await page.waitForTimeout(700);
-        return true;
-      } catch (_) {}
-    }
+async function extractMessages(page) {
+  const rows = await page.locator('a[href*="mensagens"], a[href*="messages"], a[href*="conversa"], a[href*="conversation"]').evaluateAll(nodes => nodes.map((node, index) => {
+    const href = node.getAttribute("href") || "";
+    const text = (node.innerText || node.textContent || "").trim().replace(/\s+/g, " ");
+    return {index, href, text};
+  }).filter(x => x.href || x.text));
+  const unique = new Map();
+  for (const row of rows) {
+    const key = row.href || row.text;
+    if (key && !unique.has(key)) unique.set(key, row);
   }
-
-  if (page.url().toLowerCase().includes("chat")) return true;
-  return false;
+  return [...unique.values()].slice(0, 100).map(row => ({...row, href: toAbsoluteUrl(row.href)}));
 }
 
-function absoluteUrl(href, base) {
-  try { return new URL(href, base).toString(); } catch (_) { return href || ""; }
+async function collectConversation(page, conversationUrl) {
+  await page.goto(conversationUrl, {waitUntil: "domcontentloaded"});
+  const messages = await page.locator('article, [data-message-id], .message, [class*="message"]').evaluateAll(nodes => nodes.map((node, index) => {
+    const text = (node.innerText || node.textContent || "").trim().replace(/\s+/g, " ");
+    const cls = node.className || "";
+    return {index, text, cls: String(cls)};
+  }).filter(m => m.text));
+  if (messages.length) return messages.slice(-50);
+  const body = (await page.locator("body").innerText().catch(() => "")).trim();
+  return body ? [{index: 0, text: body.slice(-8000), cls: "body-fallback"}] : [];
 }
 
-async function conversations(accountId, baseUrl) {
-  const context = await getContext(accountId);
-  const page = await getPage(context);
-  await page.goto(baseUrl || BASE, {waitUntil:"domcontentloaded", timeout:30000});
-  const state = await detectState(page);
-  if (!state.loggedIn) return {ok:false, error:state.state};
-  if (!(await openChat(page))) return {ok:false, error:"chat_not_found"};
+app.get("/health", (_, res) => res.json({ok: true}));
 
-  const data = await page.locator("a[href]").evaluateAll((els) => {
-    const out = [], seen = new Set();
-    for (const el of els) {
-      const href = el.href || el.getAttribute("href") || "";
-      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
-      if (!href || !text || href === location.href) continue;
-      const lower = href.toLowerCase();
-      if (!/(chat|mensag|conversation|conversa)/.test(lower)) continue;
-      if (seen.has(href)) continue;
-      seen.add(href);
-      out.push({id:href, url:href, title:text.slice(0, 250), unread:/\b\d+\b|nova|novo|unread/i.test(text)});
-    }
-    return out.slice(0, 100);
-  });
-  return {ok:true, conversations:data};
-}
-async function messages(accountId, conversationUrl) {
-  const context = await getContext(accountId);
-  const page = await getPage(context);
-  await page.goto(conversationUrl, {waitUntil:"domcontentloaded", timeout:30000});
-  const state = await detectState(page);
-  if (!state.loggedIn) return {ok:false, error:state.state};
-
-  const items = await page.locator("[data-message-id], [data-testid*='message'], .message, [role='listitem']").evaluateAll((els) =>
-    els.map((el, index) => {
-      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
-      const cls = String(el.className || "").toLowerCase();
-      const id = el.getAttribute("data-message-id") || el.getAttribute("id") || `${index}:${text}`;
-      return {
-        id, text: text.slice(0, 4000),
-        sender: el.getAttribute("data-sender") || "",
-        incoming: !/(outgoing|sent|mine|own-message)/.test(cls),
-        timestamp: el.getAttribute("data-timestamp") || ""
-      };
-    }).filter(x => x.text)
-  );
-  return {ok:true, messages:items.slice(-100)};
-}
-async function send(accountId, conversationUrl, text) {
-  const context = await getContext(accountId);
-  const page = await getPage(context);
-  await page.goto(conversationUrl, {waitUntil:"domcontentloaded", timeout:30000});
-  const state = await detectState(page);
-  if (!state.loggedIn) return {ok:false, error:state.state};
-
-  const inputSelectors = [
-    'textarea',
-    'textarea[placeholder*="mensagem" i]',
-    'textarea[placeholder*="message" i]',
-    'input[type="text"]'
-  ];
-
-  // A listing page needs one extra click before its message composer exists.
-  if (!(await page.locator(inputSelectors.join(",")).count())) {
-    for (const selector of [
-      'a:has-text("Contactar")', 'button:has-text("Contactar")',
-      'a:has-text("Enviar mensagem")', 'button:has-text("Enviar mensagem")',
-      'a:has-text("Mensagem")', 'button:has-text("Mensagem")'
-    ]) {
-      const el = page.locator(selector).first();
-      if (await el.count()) {
-        try {
-          await el.click({timeout:5000});
-          await page.waitForTimeout(700);
-          break;
-        } catch (_) {}
-      }
-    }
-  }
-
-  let filled = false;
-  for (const selector of inputSelectors) {
-    const el = page.locator(selector).last();
-    if (await el.count()) {
-      try {
-        await el.fill(text, {timeout:5000});
-        filled = true;
-        break;
-      } catch (_) {}
-    }
-  }
-  if (!filled) return {ok:false, error:"message_input_not_found"};
-
-  for (const selector of [
-    'button[type="submit"]',
-    'button:has-text("Enviar")',
-    'button:has-text("Send")'
-  ]) {
-    const el = page.locator(selector).last();
-    if (await el.count()) {
-      try {
-        await el.click({timeout:5000});
-        await page.waitForTimeout(500);
-        return {ok:true};
-      } catch (_) {}
-    }
-  }
-
-  return {ok:false, error:"send_button_not_found"};
-}
-
-app.get("/health", (_, res) => res.json({ok:true}));
-
-app.use((req, res, next) => {
-  if (!WORKER_SHARED_SECRET) {
-    return res.status(503).json({ok:false, error:"worker_secret_not_configured"});
-  }
-  if (req.get("x-worker-secret") !== WORKER_SHARED_SECRET) {
-    return res.status(401).json({ok:false, error:"unauthorized"});
-  }
-  return next();
-});
-
-app.post("/login", async (req,res) => {
+app.post("/login", requireAuth, async (req, res) => {
+  const {accountId, email, password} = req.body || {};
+  if (!accountId || !email || !password) return res.status(400).json({error: "accountId, email and password are required"});
+  let context;
   try {
-    const {accountId,email,password,baseUrl} = req.body || {};
-    if (!accountId || !email || !password) return res.status(400).json({ok:false,error:"missing_fields"});
-    const result = await doLogin(accountId,email,password,baseUrl);
-    res.json({ok:true,...result});
-  } catch (e) {
-    res.status(500).json({ok:false,error:String(e)});
+    ({context, page} = await openPage(accountId));
+    const result = await login(page, String(email), String(password));
+    res.status(result.ok ? 200 : 401).json(result);
+  } catch (error) {
+    res.status(500).json({error: error.message});
+  } finally {
+    if (context) await closeContext(context);
   }
 });
 
-app.post("/check", async (req,res) => {
+app.post("/status", requireAuth, async (req, res) => {
+  const {accountId} = req.body || {};
+  if (!accountId) return res.status(400).json({error: "accountId is required"});
+  let context;
   try {
-    const {accountId,baseUrl} = req.body || {};
-    const context = await getContext(accountId);
-    const page = await getPage(context);
-    await page.goto(baseUrl || BASE, {waitUntil:"domcontentloaded", timeout:30000});
-    const result = await detectState(page);
-    res.json({ok:true,...result});
-  } catch (e) {
-    res.status(500).json({ok:false,error:String(e)});
+    const opened = await openPage(accountId);
+    context = opened.context;
+    await opened.page.goto(BASE, {waitUntil: "domcontentloaded"});
+    res.json({ok: true, loggedIn: await isLoggedIn(opened.page), url: opened.page.url()});
+  } catch (error) {
+    res.status(500).json({error: error.message});
+  } finally {
+    if (context) await closeContext(context);
   }
 });
 
-app.post("/conversations", async (req,res) => {
+app.post("/send", requireAuth, async (req, res) => {
+  const {accountId, listingUrl, message} = req.body || {};
+  if (!accountId || !listingUrl || !message) return res.status(400).json({error: "accountId, listingUrl and message are required"});
+  let context;
   try {
-    const result = await conversations(req.body.accountId, req.body.baseUrl);
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ok:false,error:String(e)});
+    const opened = await openPage(accountId);
+    context = opened.context;
+    if (!await isLoggedIn(opened.page)) return res.status(401).json({error: "CustoJusto session is not logged in"});
+    res.json(await sendMessage(opened.page, String(listingUrl), String(message)));
+  } catch (error) {
+    res.status(500).json({error: error.message});
+  } finally {
+    if (context) await closeContext(context);
   }
 });
 
-app.post("/messages", async (req,res) => {
+app.post("/incoming", requireAuth, async (req, res) => {
+  const {accountId} = req.body || {};
+  if (!accountId) return res.status(400).json({error: "accountId is required"});
+  let context;
   try {
-    const result = await messages(req.body.accountId, req.body.conversationUrl);
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ok:false,error:String(e)});
-  }
-});
-
-app.post("/send", async (req,res) => {
-  try {
-    const {accountId,conversationUrl,text} = req.body || {};
-    if (!accountId || !conversationUrl || !text) return res.status(400).json({ok:false,error:"missing_fields"});
-    const result = await send(accountId,conversationUrl,text);
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ok:false,error:String(e)});
+    const opened = await openPage(accountId);
+    context = opened.context;
+    if (!await isLoggedIn(opened.page)) return res.status(401).json({error: "CustoJusto session is not logged in"});
+    await opened.page.goto(new URL("/mensagens", BASE).toString(), {waitUntil: "domcontentloaded"});
+    const conversations = await extractMessages(opened.page);
+    const result = [];
+    for (const conversation of conversations.slice(0, 20)) {
+      if (!conversation.href) continue;
+      const messages = await collectConversation(opened.page, conversation.href);
+      result.push({conversation, messages});
+    }
+    res.json({ok: true, conversations: result});
+  } catch (error) {
+    res.status(500).json({error: error.message});
+  } finally {
+    if (context) await closeContext(context);
   }
 });
 

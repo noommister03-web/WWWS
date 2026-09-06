@@ -34,5 +34,6 @@ RUN mkdir -p /app/data/custojusto/profiles \
     && chmod +x /app/start.sh
 ENV DB_PATH=/app/data/bot.sqlite3
 ENV BROWSER_WORKER_URL=http://127.0.0.1:3001
+ENV BROWSER_WORKER_PORT=3001
 EXPOSE 3001
 CMD ["/app/start.sh"]
