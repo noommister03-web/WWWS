@@ -16,31 +16,25 @@ namespace {
 bool looksLikeEmail(const std::string& value) {
     const auto at = value.find('@');
     const auto dot = value.rfind('.');
-
-    return at != std::string::npos &&
-           dot != std::string::npos &&
-           at > 0 &&
-           dot > at + 1 &&
-           dot + 1 < value.size();
+    return at != std::string::npos && dot != std::string::npos && at > 0 && dot > at + 1 && dot + 1 < value.size();
 }
 
 bool looksLikeUrl(const std::string& value) {
-    return value.rfind("http://", 0) == 0 ||
-           value.rfind("https://", 0) == 0;
+    return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
 }
 
-std::string accountStatus(
-    const CustoJustoAccount& account
-) {
-    if (account.loggedIn) {
-        return "🟢 Вошёл";
-    }
+std::string browserLink(long long id) {
+    const char* value = std::getenv("REMOTE_BROWSER_URL");
+    if (value == nullptr || *value == '\0') return "";
+    std::string root = value;
+    while (!root.empty() && root.back() == '/') root.pop_back();
+    return root + "/browser-api/manual/open?accountId=" + std::to_string(id);
+}
 
-    if (!account.enabled) {
-        return "⏸ Приостановлен";
-    }
-
-    return "🔴 Не вошёл";
+std::string accountStatus(const CustoJustoAccount& account) {
+    if (account.loggedIn) return "🟢 Сессия активна";
+    if (!account.enabled) return "⏸ Приостановлен";
+    return "🔴 Требуется вход";
 }
 
 } // namespace
@@ -48,613 +42,120 @@ std::string accountStatus(
 int main() {
     try {
         const Config config = Config::load();
-
         const char* ownerId = std::getenv("OWNER_TELEGRAM_ID");
-
-        if (ownerId == nullptr || *ownerId == '\0') {
-            std::cerr << "OWNER_TELEGRAM_ID is missing\n";
-            return 1;
-        }
-
+        if (ownerId == nullptr || *ownerId == '\0') throw std::runtime_error("OWNER_TELEGRAM_ID is missing");
         const long long ownerTelegramId = std::stoll(ownerId);
-
         Database db(config.dbPath);
+        TelegramBot bot(config.telegramToken, config.telegramPollTimeout, config.privateChatsOnly);
+        AiEngine ai(config.aiApiKey, config.aiBaseUrl, config.aiModel, config.aiSystemPrompt, config.aiTimeout);
 
-        TelegramBot bot(
-            config.telegramToken,
-            config.telegramPollTimeout,
-            config.privateChatsOnly
-        );
-
-        AiEngine ai(
-            config.aiApiKey,
-            config.aiBaseUrl,
-            config.aiModel,
-            config.aiSystemPrompt,
-            config.aiTimeout
-        );
-
-        std::unordered_map<long long, int>
-            addState;
-
-        std::unordered_map<long long, std::string>
-            pendingName;
-
-        std::unordered_map<long long, std::string>
-            pendingEmail;
-
-        std::unordered_map<long long, std::string>
-            pendingLoginUrl;
-
-        std::unordered_map<long long, std::string>
-            pendingPassword;
-
-        std::unordered_map<long long, long long>
-            pendingListingAccount;
-
-        std::unordered_map<long long, std::string>
-            pendingListingUrl;
-
-        std::unordered_map<
-            long long,
-            std::unique_ptr<CustoJustoClient>
-        > custoClients;
-
-        auto getClient =
-            [&](long long accountId)
-            -> CustoJustoClient* {
-
-                auto it =
-                    custoClients.find(accountId);
-
-                if (it != custoClients.end()) {
-                    return it->second.get();
-                }
-
-                auto client =
-                    std::make_unique<CustoJustoClient>();
-
-                client->setAccountId(accountId);
-
-                client->setBaseUrl(
-                    "https://www.custojusto.pt"
-                );
-
-                auto* result = client.get();
-
-                custoClients.emplace(
-                    accountId,
-                    std::move(client)
-                );
-
-                return result;
+        std::unordered_map<long long, int> state;
+        std::unordered_map<long long, std::string> pendingName, pendingEmail, pendingListingUrl;
+        std::unordered_map<long long, long long> pendingAccount;
+        std::unordered_map<long long, std::unique_ptr<CustoJustoClient>> clients;
+        auto client = [&](long long accountId) -> CustoJustoClient* {
+            auto found = clients.find(accountId);
+            if (found != clients.end()) return found->second.get();
+            auto item = std::make_unique<CustoJustoClient>();
+            item->setAccountId(accountId);
+            item->setBaseUrl("https://www.custojusto.pt");
+            auto* result = item.get();
+            clients.emplace(accountId, std::move(item));
+            return result;
+        };
+        auto accountsKeyboard = [&]() {
+            std::vector<std::vector<std::pair<std::string, std::string>>> keys;
+            keys.push_back({{"➕ Добавить аккаунт", "cj_add"}});
+            for (const auto& item : db.getCustoJustoAccounts()) keys.push_back({{{item.name + " · " + accountStatus(item), "cj_account:" + std::to_string(item.id)}}});
+            return keys;
+        };
+        auto accountKeyboard = [&](long long id) {
+            return std::vector<std::vector<std::pair<std::string, std::string>>>{
+                {{"🌐 Войти в CustoJusto", "cj_login:" + std::to_string(id)}, {"✅ Проверить сессию", "cj_check:" + std::to_string(id)}},
+                {{"💬 Диалоги", "cj_dialogs:" + std::to_string(id)}, {"📋 Проверить объявление", "cj_ads:" + std::to_string(id)}},
+                {{"📤 Написать продавцу", "cj_write:" + std::to_string(id)}},
+                {{"🗑 Удалить аккаунт", "cj_delete:" + std::to_string(id)}, {"⬅️ Все аккаунты", "cj_accounts"}}
             };
+        };
+        auto showAccount = [&](long long chatId, const CustoJustoAccount& account) {
+            std::string text = "👤 " + account.name + "\n\n" + "Email: " + account.email + "\n" + accountStatus(account) + "\n\n" + "Вход выполняется в защищённом браузерном профиле. Сессия сохраняется отдельно для этого аккаунта.";
+            bot.sendMessageWithKeyboard(chatId, text, accountKeyboard(account.id));
+        };
 
-        auto accountsKeyboard =
-            [&]() {
-
-                std::vector<
-                    std::vector<
-                        std::pair<std::string, std::string>
-                    >
-                > keyboard;
-
-                keyboard.push_back({
-                    {"➕ Добавить аккаунт", "cj_add"}
-                });
-
-                const auto accounts =
-                    db.getCustoJustoAccounts();
-
-                for (const auto& account : accounts) {
-                    keyboard.push_back({
-                        {
-                            account.name,
-                            "cj_account:" +
-                            std::to_string(account.id)
-                        }
-                    });
-                }
-
-                return keyboard;
-            };
-
-        auto accountKeyboard =
-            [&](long long id) {
-
-                return std::vector<
-                    std::vector<
-                        std::pair<std::string, std::string>
-                    >
-                >{
-                    {
-                        {
-                            "🌐 Открыть браузер для входа",
-                            "cj_login:" +
-                            std::to_string(id)
-                        },
-                        {
-                            "✅ Проверить сессию",
-                            "cj_check:" +
-                            std::to_string(id)
-                        }
-                    },
-                    {
-                        {
-                            "📤 Написать по объявлению",
-                            "cj_write:" +
-                            std::to_string(id)
-                        }
-                    },
-                    {
-                        {
-                            "💬 Диалоги",
-                            "cj_dialogs:" +
-                            std::to_string(id)
-                        }
-                    },
-                    {
-                        {
-                            "📋 Объявления",
-                            "cj_ads:" +
-                            std::to_string(id)
-                        }
-                    },
-                    {
-                        {
-                            "🗑 Удалить аккаунт",
-                            "cj_delete:" +
-                            std::to_string(id)
-                        }
-                    },
-                    {
-                        {
-                            "⬅️ Назад",
-                            "cj_accounts"
-                        }
-                    }
-                };
-            };
-
-        bot.setCallbackHandler(
-            [&](const CallbackQuery& callback)
-                -> bool {
-
-                if (
-                    callback.senderId !=
-                    ownerTelegramId
-                ) {
-                    bot.answerCallbackQuery(callback.id);
-                    bot.sendMessage(callback.chatId, "⛔ Нет доступа.");
-                    return true;
-                }
-
-                const std::string data = callback.data;
-                bot.answerCallbackQuery(callback.id);
-
-                if (data == "cj_add") {
-                    addState[callback.chatId] = 1;
-                    pendingName.erase(callback.chatId);
-                    pendingEmail.erase(callback.chatId);
-                    pendingLoginUrl.erase(callback.chatId);
-                    pendingPassword.erase(callback.chatId);
-                    pendingListingAccount.erase(callback.chatId);
-                    pendingListingUrl.erase(callback.chatId);
-
-                    bot.sendMessage(
-                        callback.chatId,
-                        "➕ Добавление CustoJusto\n\n"
-                        "Шаг 1 из 3\n"
-                        "Отправь название аккаунта."
-                    );
-                    return true;
-                }
-
-                if (data == "cj_accounts") {
-                    addState[callback.chatId] = 0;
-                    bot.sendMessageWithKeyboard(
-                        callback.chatId,
-                        "👥 Аккаунты CustoJusto",
-                        accountsKeyboard()
-                    );
-                    return true;
-                }
-
-                if (data.rfind("cj_account:", 0) == 0) {
-                    const long long id = std::stoll(data.substr(11));
-                    const auto account = db.getCustoJustoAccount(id);
-
-                    if (!account) {
-                        bot.sendMessage(callback.chatId, "❌ Аккаунт не найден.");
-                        return true;
-                    }
-
-                    std::string text = "👤 " + account->name + "\n\n";
-                    text += "Email: " + account->email + "\n";
-                    text += "Ссылка: " + account->loginUrl + "\n";
-                    text += "Статус: " + accountStatus(*account);
-
-                    bot.sendMessageWithKeyboard(
-                        callback.chatId, text, accountKeyboard(id)
-                    );
-                    return true;
-                }
-
-                if (data.rfind("cj_login:", 0) == 0) {
-                    const long long id = std::stoll(data.substr(9));
-                    const auto account = db.getCustoJustoAccount(id);
-
-                    if (!account) {
-                        bot.sendMessage(callback.chatId, "❌ Аккаунт не найден.");
-                        return true;
-                    }
-
-                    const char* remoteBrowserUrl = std::getenv("REMOTE_BROWSER_URL");
-                    const std::string browserUrl = remoteBrowserUrl != nullptr ? remoteBrowserUrl : "";
-                    std::string text = "🌐 Ручной вход в «" + account->name + "»\n\n";
-                    if (browserUrl.empty()) {
-                        text += "В Railway включи CJ_MANUAL_BROWSER_MODE=true и открой публичный домен сервиса по пути /vnc.html?autoconnect=true&resize=remote.";
-                    } else {
-                        text += "Открой: " + browserUrl + "/vnc.html?autoconnect=true&resize=remote";
-                    }
-                    text += "\n\nВ браузере введи данные CustoJusto и пройди CAPTCHA. Затем поставь CJ_MANUAL_BROWSER_MODE=false, сделай Deploy и нажми «Проверить сессию». Пароль в Telegram не отправляй.";
-                    bot.sendMessageWithKeyboard(callback.chatId, text, accountKeyboard(id));
-                    return true;
-                }
-
-                if (data.rfind("cj_check:", 0) == 0) {
-                    const long long id = std::stoll(data.substr(9));
-                    const auto account = db.getCustoJustoAccount(id);
-                    if (!account) {
-                        bot.sendMessage(callback.chatId, "❌ Аккаунт не найден.");
-                        return true;
-                    }
-                    auto* client = getClient(id);
-                    client->setBaseUrl(account->loginUrl);
-                    const bool loggedIn = client->checkSession();
-                    db.setCustoJustoAccountLoggedIn(id, loggedIn);
-                    const std::string result = loggedIn
-                        ? "🟢 Сессия CustoJusto активна. Можно пользоваться объявлениями и диалогами."
-                        : "🔴 Сессия пока не подтверждена. Заверши ручной вход, поставь CJ_MANUAL_BROWSER_MODE=false и выполни Deploy.";
-                    bot.sendMessageWithKeyboard(callback.chatId, result, accountKeyboard(id));
-                    return true;
-                }
-
-                if (data.rfind("cj_write:", 0) == 0) {
-                    const long long id = std::stoll(data.substr(9));
-                    const auto account = db.getCustoJustoAccount(id);
-
-                    if (!account) {
-                        bot.sendMessage(callback.chatId, "❌ Аккаунт не найден.");
-                        return true;
-                    }
-
-                    if (!account->loggedIn) {
-                        bot.sendMessage(
-                            callback.chatId,
-                            "🔐 Сначала войди в аккаунт кнопкой «Открыть браузер для входа»."
-                        );
-                        return true;
-                    }
-
-                    addState[callback.chatId] = 5;
-                    pendingListingAccount[callback.chatId] = id;
-                    pendingListingUrl.erase(callback.chatId);
-
-                    bot.sendMessage(
-                        callback.chatId,
-                        "📤 Отправка продавцу\n\n"
-                        "Пришли ссылку на объявление CustoJusto."
-                    );
-                    return true;
-                }
-
-                if (data.rfind("cj_dialogs:", 0) == 0) {
-                    bot.sendMessage(
-                        callback.chatId,
-                        "💬 Диалоги\n\n"
-                        "Модуль получения диалогов будет подключён следующим этапом."
-                    );
-                    return true;
-                }
-
-                if (data.rfind("cj_ads:", 0) == 0) {
-                    bot.sendMessage(
-                        callback.chatId,
-                        "📋 Объявления\n\n"
-                        "Модуль объявлений будет подключён следующим этапом."
-                    );
-                    return true;
-                }
-
-                if (data.rfind("cj_delete:", 0) == 0) {
-                    const long long id = std::stoll(data.substr(10));
-                    const auto account = db.getCustoJustoAccount(id);
-
-                    if (!account) {
-                        bot.sendMessage(callback.chatId, "❌ Аккаунт не найден.");
-                        return true;
-                    }
-
-                    db.deleteCustoJustoAccount(id);
-                    custoClients.erase(id);
-                    bot.sendMessageWithKeyboard(
-                        callback.chatId,
-                        "🗑 Аккаунт «" + account->name + "» удалён.",
-                        accountsKeyboard()
-                    );
-                    return true;
-                }
-
-                return false;
+        bot.setCallbackHandler([&](const CallbackQuery& callback) -> bool {
+            if (callback.senderId != ownerTelegramId) { bot.answerCallbackQuery(callback.id); bot.sendMessage(callback.chatId, "⛔ Нет доступа."); return true; }
+            const std::string data = callback.data; bot.answerCallbackQuery(callback.id);
+            if (data == "cj_add") { state[callback.chatId] = 1; pendingName.erase(callback.chatId); pendingEmail.erase(callback.chatId); bot.sendMessage(callback.chatId, "➕ Новый аккаунт\n\nШаг 1 из 2: пришли название аккаунта."); return true; }
+            if (data == "cj_accounts") { state[callback.chatId] = 0; bot.sendMessageWithKeyboard(callback.chatId, "🏠 CustoJusto CRM\n\nВыбери аккаунт или добавь новый.", accountsKeyboard()); return true; }
+            if (data.rfind("cj_account:", 0) == 0) { const auto account = db.getCustoJustoAccount(std::stoll(data.substr(11))); if (!account) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; } showAccount(callback.chatId, *account); return true; }
+            if (data.rfind("cj_login:", 0) == 0) {
+                const auto account = db.getCustoJustoAccount(std::stoll(data.substr(9))); if (!account) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; }
+                const std::string url = browserLink(account->id);
+                const std::string text = url.empty() ? "🔴 Для входа нужен REMOTE_BROWSER_URL с HTTPS-доменом Railway." : "🌐 Вход в «" + account->name + "»\n\nОткрой в любом браузере:\n" + url + "\n\nСтраница защищена отдельным паролем. В Chromium войди в CustoJusto и пройди CAPTCHA. Сессия сохранится автоматически. Пароль CustoJusto в Telegram не отправляй.";
+                bot.sendMessageWithKeyboard(callback.chatId, text, accountKeyboard(account->id)); return true;
             }
-        );
-
-        bot.setMessageHandler(
-            [&](const IncomingMessage& message)
-                -> bool {
-
-                if (message.chatId != ownerTelegramId) {
-                    bot.sendMessage(message.chatId, "⛔ Нет доступа.");
-                    return true;
-                }
-
-                const int state = addState[message.chatId];
-
-                if (state == 5) {
-                    if (!looksLikeUrl(message.text)) {
-                        bot.sendMessage(message.chatId, "❌ Нужна полная ссылка, начинающаяся с https://.");
-                        return true;
-                    }
-
-                    pendingListingUrl[message.chatId] = message.text;
-                    addState[message.chatId] = 6;
-                    bot.sendMessage(
-                        message.chatId,
-                        "Теперь пришли текст для продавца. Я переведу его на португальский "
-                        "и отправлю после твоего следующего сообщения."
-                    );
-                    return true;
-                }
-
-                if (state == 6) {
-                    const auto account = db.getCustoJustoAccount(
-                        pendingListingAccount[message.chatId]
-                    );
-                    const std::string listingUrl = pendingListingUrl[message.chatId];
-                    const std::string text = message.text;
-                    addState[message.chatId] = 0;
-                    pendingListingAccount.erase(message.chatId);
-                    pendingListingUrl.erase(message.chatId);
-
-                    if (!account || listingUrl.empty() || text.empty()) {
-                        bot.sendMessage(message.chatId, "❌ Отправка отменена: не хватает ссылки или текста.");
-                        return true;
-                    }
-
-                    auto* client = getClient(account->id);
-                    client->setBaseUrl(account->loginUrl);
-
-                    if (!ai.enabled()) {
-                        bot.sendMessage(
-                            message.chatId,
-                            "🔴 Перевод недоступен: настрой AI_API_KEY и AI_MODEL в Railway. "
-                            "Сообщение продавцу не отправлено."
-                        );
-                        return true;
-                    }
-
-                    MessageRecord translationRequest;
-                    translationRequest.incoming = true;
-                    translationRequest.text =
-                        "Переведи следующий текст с русского на европейский португальский. "
-                        "Верни только готовый перевод без комментариев, кавычек и пояснений:\n\n" + text;
-
-                    const std::string translatedText = ai.generateReply(
-                        std::vector<MessageRecord>{translationRequest}
-                    );
-
-                    if (translatedText.empty()) {
-                        bot.sendMessage(message.chatId, "🔴 Перевод не получен. Сообщение продавцу не отправлено.");
-                        return true;
-                    }
-
-                    if (!client->sendMessage(listingUrl, translatedText)) {
-                        db.setCustoJustoAccountLoggedIn(account->id, client->isLoggedIn());
-                        bot.sendMessage(
-                            message.chatId,
-                            "🔴 Не удалось отправить сообщение: " + client->getLastError()
-                        );
-                        return true;
-                    }
-
-                    bot.sendMessage(
-                        message.chatId,
-                        "✅ Сообщение переведено на португальский и отправлено продавцу."
-                    );
-                    return true;
-                }
-
-                if (state == 1) {
-                    if (message.text.empty()) {
-                        bot.sendMessage(message.chatId, "❌ Название пустое.\nОтправь название ещё раз.");
-                        return true;
-                    }
-
-                    pendingName[message.chatId] = message.text;
-                    addState[message.chatId] = 2;
-                    bot.sendMessage(
-                        message.chatId,
-                        "Шаг 2 из 3\n\nТеперь отправь email этого аккаунта CustoJusto."
-                    );
-                    return true;
-                }
-
-                if (state == 2) {
-                    if (!looksLikeEmail(message.text)) {
-                        bot.sendMessage(
-                            message.chatId,
-                            "❌ Похоже, это не email.\n\nПример:\nname@example.com"
-                        );
-                        return true;
-                    }
-
-                    pendingEmail[message.chatId] = message.text;
-                    addState[message.chatId] = 3;
-                    bot.sendMessage(message.chatId, "Шаг 3 из 3\n\nОтправь ссылку CustoJusto.");
-                    return true;
-                }
-
-                if (state == 3) {
-                    if (!looksLikeUrl(message.text)) {
-                        bot.sendMessage(
-                            message.chatId,
-                            "❌ Неверная ссылка.\n\nНужна ссылка, начинающаяся с http:// или https://."
-                        );
-                        return true;
-                    }
-
-                    const auto name = pendingName[message.chatId];
-                    const auto email = pendingEmail[message.chatId];
-                    const long long id = db.addCustoJustoAccount(name, email, message.text);
-                    addState[message.chatId] = 0;
-                    pendingName.erase(message.chatId);
-                    pendingEmail.erase(message.chatId);
-                    pendingLoginUrl.erase(message.chatId);
-
-                    bot.sendMessageWithKeyboard(
-                        message.chatId,
-                        "✅ Аккаунт добавлен.\n\n"
-                        "Название: " + name + "\n"
-                        "Email: " + email + "\n"
-                        "ID: " + std::to_string(id) + "\n\n"
-                        "Статус: 🔴 Не вошёл",
-                        accountKeyboard(id)
-                    );
-                    return true;
-                }
-
-                if (!message.text.empty()) {
-                    db.saveMessage(
-                        message.chatId,
-                        message.senderId,
-                        message.username,
-                        message.text,
-                        true,
-                        message.updateId
-                    );
-
-                    if (!ai.enabled()) {
-                        bot.sendMessage(message.chatId, "Сообщение получено.");
-                        return true;
-                    }
-
-                    const std::string answer = ai.generateReply(
-                        db.getHistory(message.chatId, config.aiHistoryLimit)
-                    );
-
-                    if (!answer.empty()) {
-                        bot.sendMessage(message.chatId, answer);
-                    }
-                }
-
-                return true;
+            if (data.rfind("cj_check:", 0) == 0) {
+                const auto account = db.getCustoJustoAccount(std::stoll(data.substr(9))); if (!account) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; }
+                auto* c = client(account->id); c->setBaseUrl(account->loginUrl); const bool active = c->checkSession(); db.setCustoJustoAccountLoggedIn(account->id, active);
+                bot.sendMessageWithKeyboard(callback.chatId, active ? "🟢 Сессия активна. Можно читать диалоги и отправлять сообщения." : "🔴 Сессия не подтверждена. Открой браузер и войди заново.", accountKeyboard(account->id)); return true;
             }
-        );
+            if (data.rfind("cj_dialogs:", 0) == 0) {
+                const auto account = db.getCustoJustoAccount(std::stoll(data.substr(11))); if (!account) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; }
+                auto* c = client(account->id); c->setBaseUrl(account->loginUrl); const auto dialogs = c->getConversations();
+                if (!c->isLoggedIn()) { db.setCustoJustoAccountLoggedIn(account->id, false); bot.sendMessageWithKeyboard(callback.chatId, "🔴 Сессия не активна. Открой браузер и войди заново.", accountKeyboard(account->id)); return true; }
+                std::string text = "💬 Диалоги: «" + account->name + "»\n\n"; if (dialogs.empty()) text += "Доступных диалогов пока нет."; for (size_t i = 0; i < dialogs.size() && i < 20; ++i) text += std::to_string(i + 1) + ". " + (dialogs[i].title.empty() ? dialogs[i].url : dialogs[i].title) + "\n";
+                bot.sendMessageWithKeyboard(callback.chatId, text, accountKeyboard(account->id)); return true;
+            }
+            if (data.rfind("cj_ads:", 0) == 0) { const long long id = std::stoll(data.substr(7)); if (!db.getCustoJustoAccount(id)) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; } state[callback.chatId] = 4; pendingAccount[callback.chatId] = id; bot.sendMessage(callback.chatId, "📋 Пришли ссылку на объявление CustoJusto."); return true; }
+            if (data.rfind("cj_write:", 0) == 0) { const long long id = std::stoll(data.substr(9)); const auto account = db.getCustoJustoAccount(id); if (!account || !account->loggedIn) { bot.sendMessage(callback.chatId, "🔐 Сначала открой браузер и подтверди сессию."); return true; } state[callback.chatId] = 5; pendingAccount[callback.chatId] = id; pendingListingUrl.erase(callback.chatId); bot.sendMessage(callback.chatId, "📤 Пришли ссылку на объявление CustoJusto."); return true; }
+            if (data.rfind("cj_delete:", 0) == 0) { const long long id = std::stoll(data.substr(10)); if (!db.deleteCustoJustoAccount(id)) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; } clients.erase(id); bot.sendMessageWithKeyboard(callback.chatId, "🗑 Аккаунт удалён.", accountsKeyboard()); return true; }
+            return false;
+        });
 
-        bot.setPeriodicHandler(
-            [&]() {
-                const auto accounts = db.getCustoJustoAccounts();
+        bot.setMessageHandler([&](const IncomingMessage& message) -> bool {
+            if (message.chatId != ownerTelegramId) { bot.sendMessage(message.chatId, "⛔ Нет доступа."); return true; }
+            const int current = state[message.chatId];
+            if (current == 1) { if (message.text.empty()) { bot.sendMessage(message.chatId, "❌ Название пустое."); return true; } pendingName[message.chatId] = message.text; state[message.chatId] = 2; bot.sendMessage(message.chatId, "Шаг 2 из 2: пришли email CustoJusto-аккаунта."); return true; }
+            if (current == 2) { if (!looksLikeEmail(message.text)) { bot.sendMessage(message.chatId, "❌ Нужен корректный email."); return true; } const long long id = db.addCustoJustoAccount(pendingName[message.chatId], message.text); state[message.chatId] = 0; pendingName.erase(message.chatId); const auto account = db.getCustoJustoAccount(id); bot.sendMessageWithKeyboard(message.chatId, "✅ Аккаунт добавлен.", accountKeyboard(id)); return true; }
+            if (current == 4) { const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); state[message.chatId] = 0; pendingAccount.erase(message.chatId); if (!account || !looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна полная ссылка на объявление."); return true; } auto* c = client(account->id); CustoJustoListing listing; if (!c->getListing(message.text, listing)) { bot.sendMessage(message.chatId, "🔴 Не удалось прочитать объявление: " + c->getLastError()); return true; } bot.sendMessageWithKeyboard(message.chatId, "📋 " + (listing.title.empty() ? "Объявление" : listing.title) + "\n" + listing.url, accountKeyboard(account->id)); return true; }
+            if (current == 5) { if (!looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна ссылка на объявление."); return true; } pendingListingUrl[message.chatId] = message.text; state[message.chatId] = 6; bot.sendMessage(message.chatId, "Напиши сообщение продавцу по-русски."); return true; }
+            if (current == 6) {
+                const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); const std::string url = pendingListingUrl[message.chatId]; state[message.chatId] = 0; pendingAccount.erase(message.chatId); pendingListingUrl.erase(message.chatId);
+                if (!account || message.text.empty()) { bot.sendMessage(message.chatId, "❌ Отправка отменена."); return true; }
+                if (!ai.enabled()) { bot.sendMessage(message.chatId, "🔴 Перевод недоступен: настрой AI_API_KEY и AI_MODEL."); return true; }
+                MessageRecord request; request.incoming = true; request.text = "Переведи следующий текст с русского на европейский португальский. Верни только перевод без комментариев:\n\n" + message.text;
+                const std::string translated = ai.generateReply(std::vector<MessageRecord>{request}); if (translated.empty()) { bot.sendMessage(message.chatId, "🔴 Перевод не получен."); return true; }
+                auto* c = client(account->id); c->setBaseUrl(account->loginUrl); if (!c->sendMessage(url, translated)) { db.setCustoJustoAccountLoggedIn(account->id, c->isLoggedIn()); bot.sendMessage(message.chatId, "🔴 Не удалось отправить: " + c->getLastError()); return true; }
+                bot.sendMessage(message.chatId, "✅ Сообщение переведено и отправлено."); return true;
+            }
+            if (!message.text.empty()) { db.saveMessage(message.chatId, message.senderId, message.username, message.text, true, message.updateId); if (!ai.enabled()) { bot.sendMessage(message.chatId, "Сообщение получено."); return true; } const std::string reply = ai.generateReply(db.getHistory(message.chatId, config.aiHistoryLimit)); if (!reply.empty()) bot.sendMessage(message.chatId, reply); }
+            return true;
+        });
 
-                for (const auto& account : accounts) {
-                    if (!account.enabled || !account.loggedIn) {
-                        continue;
-                    }
-
-                    auto* client = getClient(account.id);
-                    client->setBaseUrl(account.loginUrl);
-                    const auto conversations = client->getConversations();
-
-                    if (!client->isLoggedIn()) {
-                        db.setCustoJustoAccountLoggedIn(account.id, false);
-                        continue;
-                    }
-
-                    for (const auto& conversation : conversations) {
-                        const long long conversationId =
-                            db.upsertCustoJustoConversation(
-                                account.id,
-                                conversation.url,
-                                conversation.listingUrl,
-                                conversation.listingTitle,
-                                conversation.buyerName,
-                                conversation.id,
-                                conversation.lastMessage,
-                                0,
-                                conversation.unread
-                            );
-
-                        const auto messages = client->getMessages(conversation.url);
-
-                        for (const auto& item : messages) {
-                            if (!item.incoming ||
-                                db.hasCustoJustoExternalMessage(account.id, item.id)) {
-                                continue;
-                            }
-
-                            std::string translated = item.text;
-                            if (ai.enabled()) {
-                                MessageRecord translationRequest;
-                                translationRequest.incoming = true;
-                                translationRequest.text =
-                                    "Переведи следующий текст с европейского португальского на русский. "
-                                    "Верни только перевод без комментариев:\n\n" + item.text;
-                                const std::string answer = ai.generateReply(
-                                    std::vector<MessageRecord>{translationRequest}
-                                );
-                                if (!answer.empty()) {
-                                    translated = answer;
-                                }
-                            }
-
-                            db.saveCustoJustoMessage(
-                                account.id,
-                                conversationId,
-                                item.id,
-                                item.sender,
-                                item.text,
-                                translated,
-                                true
-                            );
-
-                            bot.sendMessage(
-                                ownerTelegramId,
-                                "📩 Новое сообщение CustoJusto\n\n"
-                                "Аккаунт: " + account.name + "\n"
-                                "Диалог: " + conversation.title + "\n\n"
-                                "🇵🇹 " + item.text + "\n\n"
-                                "🇷🇺 " + translated
-                            );
-                        }
+        bot.setPeriodicHandler([&]() {
+            for (const auto& account : db.getCustoJustoAccounts()) {
+                if (!account.enabled || !account.loggedIn) continue;
+                auto* c = client(account.id); c->setBaseUrl(account.loginUrl); const auto dialogs = c->getConversations();
+                if (!c->isLoggedIn()) { db.setCustoJustoAccountLoggedIn(account.id, false); continue; }
+                for (const auto& dialog : dialogs) {
+                    const long long conversationId = db.upsertCustoJustoConversation(account.id, dialog.url, dialog.listingUrl, dialog.listingTitle, dialog.buyerName, dialog.id, dialog.lastMessage, 0, dialog.unread);
+                    for (const auto& item : c->getMessages(dialog.url)) {
+                        if (!item.incoming || db.hasCustoJustoExternalMessage(account.id, item.id)) continue;
+                        std::string translated = item.text;
+                        if (ai.enabled()) { MessageRecord request; request.incoming = true; request.text = "Переведи следующий текст с европейского португальского на русский. Верни только перевод без комментариев:\n\n" + item.text; const std::string answer = ai.generateReply(std::vector<MessageRecord>{request}); if (!answer.empty()) translated = answer; }
+                        db.saveCustoJustoMessage(account.id, conversationId, item.id, item.sender, item.text, translated, true);
+                        bot.sendMessage(ownerTelegramId, "📩 Новое сообщение CustoJusto\n\nАккаунт: " + account.name + "\nДиалог: " + dialog.title + "\n\n🇵🇹 " + item.text + "\n\n🇷🇺 " + translated);
                     }
                 }
-            },
-            45
-        );
+            }
+        }, 45);
 
-        bot.sendMessageWithKeyboard(
-            ownerTelegramId,
-            "🤖 CRM запущена.\n\nУправление аккаунтами CustoJusto:",
-            accountsKeyboard()
-        );
-
+        bot.sendMessageWithKeyboard(ownerTelegramId, "🏠 CustoJusto CRM\n\nАккаунты, сессии, диалоги и сообщения.", accountsKeyboard());
         std::cout << "Telegram CRM started\n";
         bot.run();
-
-    } catch (const std::exception& e) {
-        std::cerr << "Fatal error: " << e.what() << '\n';
+    } catch (const std::exception& error) {
+        std::cerr << "Fatal error: " << error.what() << '\n';
         return 1;
     }
-
     return 0;
 }
