@@ -28,6 +28,7 @@ struct Config {
     int aiTimeout = 30;
 
     bool privateChatsOnly = true;
+    bool custoJustoAutoReply = false;
 
     static Config load();
 

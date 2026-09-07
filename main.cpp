@@ -5,6 +5,8 @@
 #include "CustoJustoClient.hpp"
 
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <iostream>
 #include <memory>
@@ -32,16 +34,27 @@ std::string browserLink(long long id) {
     return root + "/browser-api/manual/open?accountId=" + std::to_string(id) + "&mobile=1";
 }
 
+bool requiresManualReview(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::vector<std::string> blocked = {
+        "pagamento", "pagar", "prepag", "sinal", "iban", "mb way", "transferência", "transferencia",
+        "cartão", "cartao", "código", "codigo", "documento", "morada", "endereço", "endereco",
+        "encontro", "reunião", "reuniao", "link", "passaporte", "cartão de cidadão", "cartao de cidadao"
+    };
+    return std::any_of(blocked.begin(), blocked.end(), [&](const std::string& word) { return text.find(word) != std::string::npos; });
+}
+
 std::string buildReplyDraft(AiEngine& ai, const CustoJustoAccount& account, const CustoJustoConversation& dialog, const std::vector<CustoJustoMessage>& messages, const std::string& whatsappNumber) {
     std::vector<MessageRecord> history;
     MessageRecord instruction;
     instruction.incoming = true;
     instruction.text =
         "Составь только один короткий естественный ответ покупателя на европейском португальском. Используй только данные объявления и переписки ниже. "
+        "Не утверждай личность, пол, имя, биографию или личные обстоятельства покупателя. "
         "Задай один уместный вопрос именно об этом товаре, если важных сведений ещё нет. Затем вежливо предложи CTT: отслеживание, подтверждение отправки и отсутствие необходимости согласовывать личную встречу. "
-        "Не дави, не обманывай, не выдумывай гарантии и факты, не соглашайся на цену, оплату, адрес, документы, коды или встречу. "
-        "Предложи WhatsApp https://wa.me/" + whatsappNumber + " только после явного согласия продавца на доставку CTT. "
-        "Название аккаунта: " + account.name + ". Объявление: " + (dialog.listingTitle.empty() ? dialog.title : dialog.listingTitle) + ".";
+        "Не дави, не обманывай, не выдумывай гарантии и факты, не соглашайся на цену, оплату, адрес, документы, коды или встречу. ";
+    if (!whatsappNumber.empty()) instruction.text += "Предложи WhatsApp https://wa.me/" + whatsappNumber + " только после явного согласия продавца на доставку CTT. ";
+    instruction.text += "Название аккаунта: " + account.name + ". Объявление: " + (dialog.listingTitle.empty() ? dialog.title : dialog.listingTitle) + ".";
     history.push_back(instruction);
     const std::size_t start = messages.size() > 18 ? messages.size() - 18 : 0;
     for (std::size_t i = start; i < messages.size(); ++i) {
@@ -52,6 +65,17 @@ std::string buildReplyDraft(AiEngine& ai, const CustoJustoAccount& account, cons
         history.push_back(std::move(record));
     }
     return ai.generateReply(history);
+}
+
+std::string buildFirstMessage(AiEngine& ai, const CustoJustoListing& listing) {
+    MessageRecord request;
+    request.incoming = true;
+    request.text =
+        "Составь только первое короткое сообщение продавцу на европейском португальском по объявлению «" + listing.title + "». "
+        "Покажи реальный интерес и задай один конкретный уместный вопрос о состоянии или работе товара. "
+        "Не выдумывай личность, пол, имя или обстоятельства покупателя, не обсуждай оплату, документы, адрес или встречу и пока не предлагай WhatsApp. "
+        "Верни только текст сообщения без пояснений.";
+    return ai.generateReply(std::vector<MessageRecord>{request});
 }
 
 std::string accountStatus(const CustoJustoAccount& account) {
@@ -141,7 +165,17 @@ int main() {
             if (current == 1) { if (message.text.empty()) { bot.sendMessage(message.chatId, "❌ Название пустое."); return true; } pendingName[message.chatId] = message.text; state[message.chatId] = 2; bot.sendMessage(message.chatId, "Шаг 2 из 2: пришли email CustoJusto-аккаунта."); return true; }
             if (current == 2) { if (!looksLikeEmail(message.text)) { bot.sendMessage(message.chatId, "❌ Нужен корректный email."); return true; } const long long id = db.addCustoJustoAccount(pendingName[message.chatId], message.text); state[message.chatId] = 0; pendingName.erase(message.chatId); const auto account = db.getCustoJustoAccount(id); bot.sendMessageWithKeyboard(message.chatId, "✅ Аккаунт добавлен.", accountKeyboard(id)); return true; }
             if (current == 4) { const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); state[message.chatId] = 0; pendingAccount.erase(message.chatId); if (!account || !looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна полная ссылка на объявление."); return true; } auto* c = client(account->id); c->setBaseUrl(account->loginUrl); CustoJustoListing listing; if (!c->getListing(message.text, listing)) { bot.sendMessage(message.chatId, "🔴 Не удалось прочитать объявление: " + c->getLastError()); return true; } bot.sendMessageWithKeyboard(message.chatId, "📋 " + (listing.title.empty() ? "Объявление" : listing.title) + "\n" + listing.url, accountKeyboard(account->id)); return true; }
-            if (current == 5) { if (!looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна ссылка на объявление."); return true; } pendingListingUrl[message.chatId] = message.text; state[message.chatId] = 6; bot.sendMessage(message.chatId, "Напиши сообщение продавцу по-русски."); return true; }
+            if (current == 5) {
+                if (!looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна ссылка на объявление."); return true; }
+                if (!config.custoJustoAutoReply) { pendingListingUrl[message.chatId] = message.text; state[message.chatId] = 6; bot.sendMessage(message.chatId, "Напиши сообщение продавцу по-русски."); return true; }
+                const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); state[message.chatId] = 0; pendingAccount.erase(message.chatId);
+                if (!account || !ai.enabled()) { bot.sendMessage(message.chatId, "🔴 Автоответ недоступен: проверь AI_API_KEY, AI_MODEL и CJ_AUTO_REPLY_ENABLED."); return true; }
+                auto* c = client(account->id); c->setBaseUrl(account->loginUrl); CustoJustoListing listing;
+                if (!c->getListing(message.text, listing)) { bot.sendMessage(message.chatId, "🔴 Не удалось прочитать объявление: " + c->getLastError()); return true; }
+                const std::string first = buildFirstMessage(ai, listing);
+                if (first.empty() || !c->sendMessage(message.text, first)) { bot.sendMessage(message.chatId, "🔴 Не удалось начать диалог: " + c->getLastError()); return true; }
+                bot.sendMessage(message.chatId, "✅ GPT начал диалог по объявлению. Дальше ответы продавца проверяются автоматически каждые 45 секунд."); return true;
+            }
             if (current == 6) {
                 const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); const std::string url = pendingListingUrl[message.chatId]; state[message.chatId] = 0; pendingAccount.erase(message.chatId); pendingListingUrl.erase(message.chatId);
                 if (!account || message.text.empty()) { bot.sendMessage(message.chatId, "❌ Отправка отменена."); return true; }
@@ -174,7 +208,12 @@ int main() {
                             catch (const std::exception&) { draft.clear(); }
                         }
                         std::string notice = "📩 Новое сообщение CustoJusto\n\nАккаунт: " + account.name + "\nДиалог: " + dialog.title + "\n\n🇵🇹 " + item.text + "\n\n🇷🇺 " + translated;
-                        if (!draft.empty()) notice += "\n\n📝 Черновик ответа — не отправлен:\n🇵🇹 " + draft;
+                        const bool blocked = requiresManualReview(item.text) || requiresManualReview(draft);
+                        if (config.custoJustoAutoReply && !draft.empty() && !blocked && c->sendMessage(dialog.url, draft)) {
+                            notice += "\n\n🤖 GPT ответил автоматически:\n🇵🇹 " + draft;
+                        } else if (!draft.empty()) {
+                            notice += blocked ? "\n\n⚠️ Нужна ручная проверка — ответ не отправлен:\n🇵🇹 " + draft : "\n\n📝 Черновик ответа — не отправлен:\n🇵🇹 " + draft;
+                        }
                         bot.sendMessage(ownerTelegramId, notice);
                     }
                 }

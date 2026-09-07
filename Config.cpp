@@ -174,5 +174,10 @@ Config Config::load() {
         true
     );
 
+    config.custoJustoAutoReply = envBool(
+        "CJ_AUTO_REPLY_ENABLED",
+        false
+    );
+
     return config;
 }
