@@ -50,6 +50,12 @@ if [ "$MANUAL_MODE" = "true" ]; then
   basicauth /* {
     custo $password_hash
   }
+
+  @mobile path /mobile
+  handle @mobile {
+    redir /vnc.html?autoconnect=true&resize=scale&show_dot=true 302
+  }
+
   reverse_proxy 127.0.0.1:6080
 }
 EOF
