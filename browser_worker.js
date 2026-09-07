@@ -17,7 +17,33 @@ async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))retur
 async function use(req,res,fn){try{const s=await session(req.body?.accountId);await fn(s.page,base(req.body?.baseUrl))}catch(e){if(!res.headersSent)res.status(500).json({error:e.message})}}
 async function conversations(page,b){await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(page);const rows=await page.locator('a[href*="mensagens"],a[href*="messages"],a[href*="conversa"],a[href*="conversation"]').evaluateAll(ns=>ns.map((n,i)=>({id:n.getAttribute("data-conversation-id")||n.getAttribute("data-id")||`conversation-${i}`,url:n.href||n.getAttribute("href")||"",title:(n.innerText||n.textContent||"").trim().replace(/\s+/g," ")})).filter(x=>x.url));const seen=new Set;return rows.map(x=>({...x,url:new URL(x.url,b).toString(),listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100)}
 async function messages(page,url){await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});const rows=await page.locator('article,[data-message-id],.message,[class*="message"]').evaluateAll(ns=>ns.map((n,i)=>({id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||`message-${i}`,sender:n.getAttribute("data-sender")||"",text:(n.innerText||n.textContent||"").trim().replace(/\s+/g," "),timestamp:n.querySelector("time")?.getAttribute("datetime")||"",incoming:!/outgoing|sent|self/i.test(`${n.className} ${n.getAttribute("data-direction")||""}`)})).filter(x=>x.text));return rows.slice(-100).map(x=>({...x,conversationId:url}))}
-async function send(page,url,text){await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});for(const q of ['a:has-text("Contactar")','button:has-text("Contactar")','a:has-text("Mensagem")','button:has-text("Mensagem")','a[href*="mensagens"]']){const x=page.locator(q).first();if(await x.isVisible().catch(()=>false)){await x.click();await page.waitForTimeout(600);break}}const f=page.locator('textarea,[contenteditable="true"],input[name*="message" i],textarea[name*="message" i]').first();await f.waitFor({state:"visible"});await f.fill(text);await page.locator('button[type="submit"],button:has-text("Enviar"),button:has-text("Send")').first().click();return{ok:true,url:page.url()}}
+async function visible(page,selectors){for(const q of selectors){const x=page.locator(q).first();if(await x.isVisible().catch(()=>false))return x}return null}
+async function send(page,url,text){
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+  await cookies(page);
+  const fieldSelectors=['textarea','[contenteditable="true"]','input[name*="message" i]','textarea[name*="message" i]'];
+  let field=await visible(page,fieldSelectors);
+  if(!field){
+    const contact=await visible(page,['button:has-text("mensagem")','a:has-text("mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")']);
+    if(!contact)throw Error("CustoJusto contact button was not found on this listing");
+    await contact.click();
+    await page.waitForTimeout(400);
+    field=await visible(page,fieldSelectors);
+    if(!field){
+      try{await page.waitForSelector('textarea,[contenteditable="true"],input[name*="message" i],textarea[name*="message" i]',{state:"visible",timeout:TIMEOUT});}catch{
+        const title=(await page.title().catch(()=>""));
+        const text=(await page.locator('body').innerText().catch(()=>"")).replace(/\s+/g," ").slice(0,500);
+        throw Error(`CustoJusto message form did not open after contacting the seller (page: ${title}; url: ${page.url()}; visible text: ${text})`);
+      }
+      field=await visible(page,fieldSelectors);
+    }
+  }
+  await field.fill(text);
+  const submit=await visible(page,['button[type="submit"]','button:has-text("Enviar")','button:has-text("Send")']);
+  if(!submit)throw Error("CustoJusto send button was not found after the message form opened");
+  await submit.click();
+  return{ok:true,url:page.url()}
+}
 app.get("/health",(_,res)=>res.json({ok:true,activeProfiles:contexts.size}));
 app.post("/manual/prepare",auth,async(req,res)=>{try{const account=id(req.body?.accountId),email=String(req.body?.email||"").trim(),password=String(req.body?.password||"");if(!email||!password)return res.status(400).json({error:"email and password are required"});const s=await session(account);await s.page.goto(new URL("/login",base(req.body?.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const emailField=s.page.locator("#username");const passwordField=s.page.locator("#password");await emailField.waitFor({state:"visible"});await emailField.fill(email);await passwordField.waitFor({state:"visible"});await passwordField.fill(password);res.json({ok:true})}catch(e){res.status(500).json({error:e.message})}});
 app.get("/manual/open",async(req,res)=>{try{const s=await session(req.query.accountId);await s.page.goto(new URL("/login",base(req.query.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const mobile=String(req.query.mobile||"")==="1";res.redirect(302,mobile?"/vnc.html?autoconnect=true&resize=scale&show_dot=true":"/vnc.html?autoconnect=true&resize=remote")}catch(e){res.status(500).type("text/plain").send(`Unable to open browser: ${e.message}`)}});
