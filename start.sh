@@ -81,8 +81,6 @@ else
 EOF
 fi
 
-# A bad proxy configuration previously left Telegram running while Railway
-# returned 502. Validate and probe the public listener before starting the bot.
 caddy validate --config /tmp/Caddyfile --adapter caddyfile
 caddy run --config /tmp/Caddyfile --adapter caddyfile >/tmp/caddy.log 2>&1 &
 caddy_pid=$!
@@ -92,10 +90,21 @@ if ! kill -0 "$caddy_pid" 2>/dev/null; then
   echo "Caddy failed to start" >&2
   exit 1
 fi
-if ! node -e 'fetch("http://127.0.0.1:" + (process.env.PORT || "8080") + "/").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; then
-  cat /tmp/caddy.log >&2 || true
-  echo "Public listener did not become ready" >&2
-  exit 1
+
+# In manual mode the public endpoint is intentionally password protected;
+# 401 proves Caddy is listening just as well as a normal 2xx response.
+if [ "$MANUAL_MODE" = "true" ]; then
+  if ! node -e 'fetch("http://127.0.0.1:" + (process.env.PORT || "8080") + "/").then(r=>process.exit((r.status===401||r.ok)?0:1)).catch(()=>process.exit(1))'; then
+    cat /tmp/caddy.log >&2 || true
+    echo "Protected manual-browser listener did not become ready" >&2
+    exit 1
+  fi
+else
+  if ! node -e 'fetch("http://127.0.0.1:" + (process.env.PORT || "8080") + "/").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; then
+    cat /tmp/caddy.log >&2 || true
+    echo "Public listener did not become ready" >&2
+    exit 1
+  fi
 fi
 
 exec /app/tg_bot
