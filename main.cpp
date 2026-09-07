@@ -5,6 +5,7 @@
 #include "CustoJustoClient.hpp"
 
 #include <cstdlib>
+#include <sstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -29,6 +30,28 @@ std::string browserLink(long long id) {
     std::string root = value;
     while (!root.empty() && root.back() == '/') root.pop_back();
     return root + "/browser-api/manual/open?accountId=" + std::to_string(id) + "&mobile=1";
+}
+
+std::string buildReplyDraft(AiEngine& ai, const CustoJustoAccount& account, const CustoJustoConversation& dialog, const std::vector<CustoJustoMessage>& messages, const std::string& whatsappNumber) {
+    std::vector<MessageRecord> history;
+    MessageRecord instruction;
+    instruction.incoming = true;
+    instruction.text =
+        "Составь только один короткий естественный ответ покупателя на европейском португальском. Используй только данные объявления и переписки ниже. "
+        "Задай один уместный вопрос именно об этом товаре, если важных сведений ещё нет. Затем вежливо предложи CTT: отслеживание, подтверждение отправки и отсутствие необходимости согласовывать личную встречу. "
+        "Не дави, не обманывай, не выдумывай гарантии и факты, не соглашайся на цену, оплату, адрес, документы, коды или встречу. "
+        "Предложи WhatsApp https://wa.me/" + whatsappNumber + " только после явного согласия продавца на доставку CTT. "
+        "Название аккаунта: " + account.name + ". Объявление: " + (dialog.listingTitle.empty() ? dialog.title : dialog.listingTitle) + ".";
+    history.push_back(instruction);
+    const std::size_t start = messages.size() > 18 ? messages.size() - 18 : 0;
+    for (std::size_t i = start; i < messages.size(); ++i) {
+        if (messages[i].text.empty()) continue;
+        MessageRecord record;
+        record.incoming = messages[i].incoming;
+        record.text = messages[i].text;
+        history.push_back(std::move(record));
+    }
+    return ai.generateReply(history);
 }
 
 std::string accountStatus(const CustoJustoAccount& account) {
@@ -139,12 +162,20 @@ int main() {
                 if (!c->isLoggedIn()) { db.setCustoJustoAccountLoggedIn(account.id, false); continue; }
                 for (const auto& dialog : dialogs) {
                     const long long conversationId = db.upsertCustoJustoConversation(account.id, dialog.url, dialog.listingUrl, dialog.listingTitle, dialog.buyerName, dialog.id, dialog.lastMessage, 0, dialog.unread);
-                    for (const auto& item : c->getMessages(dialog.url)) {
+                    const auto conversationMessages = c->getMessages(dialog.url);
+                    for (const auto& item : conversationMessages) {
                         if (!item.incoming || db.hasCustoJustoExternalMessage(account.id, item.id)) continue;
                         std::string translated = item.text;
                         if (ai.enabled()) { MessageRecord request; request.incoming = true; request.text = "Переведи следующий текст с европейского португальского на русский. Верни только перевод без комментариев:\n\n" + item.text; const std::string answer = ai.generateReply(std::vector<MessageRecord>{request}); if (!answer.empty()) translated = answer; }
                         db.saveCustoJustoMessage(account.id, conversationId, item.id, item.sender, item.text, translated, true);
-                        bot.sendMessage(ownerTelegramId, "📩 Новое сообщение CustoJusto\n\nАккаунт: " + account.name + "\nДиалог: " + dialog.title + "\n\n🇵🇹 " + item.text + "\n\n🇷🇺 " + translated);
+                        std::string draft;
+                        if (ai.enabled()) {
+                            try { draft = buildReplyDraft(ai, account, dialog, conversationMessages, config.whatsappNumber); }
+                            catch (const std::exception&) { draft.clear(); }
+                        }
+                        std::string notice = "📩 Новое сообщение CustoJusto\n\nАккаунт: " + account.name + "\nДиалог: " + dialog.title + "\n\n🇵🇹 " + item.text + "\n\n🇷🇺 " + translated;
+                        if (!draft.empty()) notice += "\n\n📝 Черновик ответа — не отправлен:\n🇵🇹 " + draft;
+                        bot.sendMessage(ownerTelegramId, notice);
                     }
                 }
             }
