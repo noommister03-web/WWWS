@@ -21,9 +21,23 @@ node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).c
 HASH="$(caddy hash-password --plaintext "$REMOTE_BROWSER_PASSWORD")"
 cat >/tmp/Caddyfile <<EOF2
 :${PORT} {
- handle /health { respond "ok" 200 }
- handle_path /browser-api/* { basicauth { custo $HASH } reverse_proxy 127.0.0.1:3001 }
- handle { basicauth { custo $HASH } reverse_proxy 127.0.0.1:6080 }
+  handle /health {
+    respond "ok" 200
+  }
+
+  handle_path /browser-api/* {
+    basicauth {
+      custo $HASH
+    }
+    reverse_proxy 127.0.0.1:3001
+  }
+
+  handle {
+    basicauth {
+      custo $HASH
+    }
+    reverse_proxy 127.0.0.1:6080
+  }
 }
 EOF2
 caddy validate --config /tmp/Caddyfile --adapter caddyfile
