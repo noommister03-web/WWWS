@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
 
-: "${BROWSER_WORKER_SHARED_SECRET:?BROWSER_WORKER_SHARED_SECRET is required}"
 PUBLIC_PORT="${PORT:-8080}"
 MANUAL_MODE="${CJ_MANUAL_BROWSER_MODE:-false}"
 
@@ -11,13 +10,19 @@ xvfb_pid=""
 openbox_pid=""
 vnc_pid=""
 websockify_pid=""
+caddy_pid=""
+
+cleanup() {
+  kill "$caddy_pid" "$manual_pid" "$worker_pid" "$websockify_pid" "$vnc_pid" "$openbox_pid" "$xvfb_pid" 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap cleanup INT TERM EXIT
 
 if [ "$MANUAL_MODE" = "true" ]; then
   : "${REMOTE_BROWSER_PASSWORD:?REMOTE_BROWSER_PASSWORD is required when CJ_MANUAL_BROWSER_MODE=true}"
   export DISPLAY=:99
 
-  # A restart can inherit a stale X lock while the X server itself is still
-  # usable. Reuse the existing display; remove only a stale lock/socket pair.
+  # Reuse a live X server after a process restart; remove only a stale lock.
   if [ ! -S /tmp/.X11-unix/X99 ]; then
     rm -f /tmp/.X99-lock
     mkdir -p /tmp/.X11-unix
@@ -54,8 +59,21 @@ if [ "$MANUAL_MODE" = "true" ]; then
 }
 EOF
 else
+  : "${BROWSER_WORKER_SHARED_SECRET:?BROWSER_WORKER_SHARED_SECRET is required}"
   node /app/browser_worker.js >/tmp/browser-worker.log 2>&1 &
   worker_pid=$!
+
+  retries=0
+  until node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; do
+    retries=$((retries + 1))
+    if [ "$retries" -ge 30 ]; then
+      cat /tmp/browser-worker.log >&2 || true
+      echo "CustoJusto browser worker did not become ready" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+
   cat > /tmp/Caddyfile <<EOF
 :${PUBLIC_PORT} {
   respond "CustoJusto bridge is running" 200
@@ -63,23 +81,21 @@ else
 EOF
 fi
 
+# A bad proxy configuration previously left Telegram running while Railway
+# returned 502. Validate and probe the public listener before starting the bot.
+caddy validate --config /tmp/Caddyfile --adapter caddyfile
 caddy run --config /tmp/Caddyfile --adapter caddyfile >/tmp/caddy.log 2>&1 &
 caddy_pid=$!
-cleanup() {
-  kill "$caddy_pid" "$manual_pid" "$worker_pid" "$websockify_pid" "$vnc_pid" "$openbox_pid" "$xvfb_pid" 2>/dev/null || true
-  wait 2>/dev/null || true
-}
-trap cleanup INT TERM EXIT
-
-if [ "$MANUAL_MODE" != "true" ]; then
-  retries=0
-  until node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; do
-    retries=$((retries + 1))
-    if [ "$retries" -ge 30 ]; then
-      echo "CustoJusto browser worker did not become ready" >&2
-      exit 1
-    fi
-    sleep 1
-  done
+sleep 1
+if ! kill -0 "$caddy_pid" 2>/dev/null; then
+  cat /tmp/caddy.log >&2 || true
+  echo "Caddy failed to start" >&2
+  exit 1
 fi
+if ! node -e 'fetch("http://127.0.0.1:" + (process.env.PORT || "8080") + "/").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; then
+  cat /tmp/caddy.log >&2 || true
+  echo "Public listener did not become ready" >&2
+  exit 1
+fi
+
 exec /app/tg_bot
