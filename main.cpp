@@ -169,8 +169,13 @@ int main() {
                 >{
                     {
                         {
-                            "🔐 Войти в аккаунт",
+                            "🌐 Открыть браузер для входа",
                             "cj_login:" +
+                            std::to_string(id)
+                        },
+                        {
+                            "✅ Проверить сессию",
+                            "cj_check:" +
                             std::to_string(id)
                         }
                     },
@@ -284,16 +289,34 @@ int main() {
                         return true;
                     }
 
-                    addState[callback.chatId] = 4;
-                    pendingListingAccount[callback.chatId] = id;
-                    pendingListingUrl.erase(callback.chatId);
+                    const char* remoteBrowserUrl = std::getenv("REMOTE_BROWSER_URL");
+                    const std::string browserUrl = remoteBrowserUrl != nullptr ? remoteBrowserUrl : "";
+                    std::string text = "🌐 Ручной вход в «" + account->name + "»\n\n";
+                    if (browserUrl.empty()) {
+                        text += "В Railway включи CJ_MANUAL_BROWSER_MODE=true и открой публичный домен сервиса по пути /vnc.html?autoconnect=true&resize=remote.";
+                    } else {
+                        text += "Открой: " + browserUrl + "/vnc.html?autoconnect=true&resize=remote";
+                    }
+                    text += "\n\nВ браузере введи данные CustoJusto и пройди CAPTCHA. Затем поставь CJ_MANUAL_BROWSER_MODE=false, сделай Deploy и нажми «Проверить сессию». Пароль в Telegram не отправляй.";
+                    bot.sendMessageWithKeyboard(callback.chatId, text, accountKeyboard(id));
+                    return true;
+                }
 
-                    bot.sendMessage(
-                        callback.chatId,
-                        "🔐 Вход в «" + account->name + "»\n\n"
-                        "Отправь пароль от CustoJusto. Пароль используется только для входа "
-                        "в текущую сессию и не сохраняется в базе."
-                    );
+                if (data.rfind("cj_check:", 0) == 0) {
+                    const long long id = std::stoll(data.substr(9));
+                    const auto account = db.getCustoJustoAccount(id);
+                    if (!account) {
+                        bot.sendMessage(callback.chatId, "❌ Аккаунт не найден.");
+                        return true;
+                    }
+                    auto* client = getClient(id);
+                    client->setBaseUrl(account->loginUrl);
+                    const bool loggedIn = client->checkSession();
+                    db.setCustoJustoAccountLoggedIn(id, loggedIn);
+                    const std::string result = loggedIn
+                        ? "🟢 Сессия CustoJusto активна. Можно пользоваться объявлениями и диалогами."
+                        : "🔴 Сессия пока не подтверждена. Заверши ручной вход, поставь CJ_MANUAL_BROWSER_MODE=false и выполни Deploy.";
+                    bot.sendMessageWithKeyboard(callback.chatId, result, accountKeyboard(id));
                     return true;
                 }
 
@@ -309,7 +332,7 @@ int main() {
                     if (!account->loggedIn) {
                         bot.sendMessage(
                             callback.chatId,
-                            "🔐 Сначала войди в аккаунт кнопкой «Войти в аккаунт»."
+                            "🔐 Сначала войди в аккаунт кнопкой «Открыть браузер для входа»."
                         );
                         return true;
                     }
@@ -377,37 +400,6 @@ int main() {
                 }
 
                 const int state = addState[message.chatId];
-
-                if (state == 4) {
-                    const auto account = db.getCustoJustoAccount(
-                        pendingListingAccount[message.chatId]
-                    );
-
-                    if (!account || message.text.empty()) {
-                        addState[message.chatId] = 0;
-                        pendingPassword.erase(message.chatId);
-                        bot.sendMessage(message.chatId, "❌ Не удалось получить пароль или аккаунт.");
-                        return true;
-                    }
-
-                    auto* client = getClient(account->id);
-                    client->setBaseUrl(account->loginUrl);
-                    const auto login = client->login(account->email, message.text);
-                    pendingPassword.erase(message.chatId);
-                    addState[message.chatId] = 0;
-                    db.setCustoJustoAccountLoggedIn(account->id, login.loggedIn);
-
-                    std::string result = login.loggedIn
-                        ? "🟢 Вход выполнен. Сессия сохранена для этого аккаунта."
-                        : "🔴 Войти не удалось: " + login.message;
-
-                    if (login.requiresCaptcha || login.requiresTwoFactor) {
-                        result += "\n\nОткрой CustoJusto в браузере и пройди проверку; затем нажми вход снова.";
-                    }
-
-                    bot.sendMessageWithKeyboard(message.chatId, result, accountKeyboard(account->id));
-                    return true;
-                }
 
                 if (state == 5) {
                     if (!looksLikeUrl(message.text)) {
