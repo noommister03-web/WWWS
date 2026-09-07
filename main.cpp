@@ -28,7 +28,7 @@ std::string browserLink(long long id) {
     if (value == nullptr || *value == '\0') return "";
     std::string root = value;
     while (!root.empty() && root.back() == '/') root.pop_back();
-    return root + "/browser-api/manual/open?accountId=" + std::to_string(id);
+    return root + "/browser-api/manual/open?accountId=" + std::to_string(id) + "&mobile=1";
 }
 
 std::string accountStatus(const CustoJustoAccount& account) {
@@ -117,7 +117,7 @@ int main() {
             const int current = state[message.chatId];
             if (current == 1) { if (message.text.empty()) { bot.sendMessage(message.chatId, "❌ Название пустое."); return true; } pendingName[message.chatId] = message.text; state[message.chatId] = 2; bot.sendMessage(message.chatId, "Шаг 2 из 2: пришли email CustoJusto-аккаунта."); return true; }
             if (current == 2) { if (!looksLikeEmail(message.text)) { bot.sendMessage(message.chatId, "❌ Нужен корректный email."); return true; } const long long id = db.addCustoJustoAccount(pendingName[message.chatId], message.text); state[message.chatId] = 0; pendingName.erase(message.chatId); const auto account = db.getCustoJustoAccount(id); bot.sendMessageWithKeyboard(message.chatId, "✅ Аккаунт добавлен.", accountKeyboard(id)); return true; }
-            if (current == 4) { const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); state[message.chatId] = 0; pendingAccount.erase(message.chatId); if (!account || !looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна полная ссылка на объявление."); return true; } auto* c = client(account->id); CustoJustoListing listing; if (!c->getListing(message.text, listing)) { bot.sendMessage(message.chatId, "🔴 Не удалось прочитать объявление: " + c->getLastError()); return true; } bot.sendMessageWithKeyboard(message.chatId, "📋 " + (listing.title.empty() ? "Объявление" : listing.title) + "\n" + listing.url, accountKeyboard(account->id)); return true; }
+            if (current == 4) { const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); state[message.chatId] = 0; pendingAccount.erase(message.chatId); if (!account || !looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна полная ссылка на объявление."); return true; } auto* c = client(account->id); c->setBaseUrl(account->loginUrl); CustoJustoListing listing; if (!c->getListing(message.text, listing)) { bot.sendMessage(message.chatId, "🔴 Не удалось прочитать объявление: " + c->getLastError()); return true; } bot.sendMessageWithKeyboard(message.chatId, "📋 " + (listing.title.empty() ? "Объявление" : listing.title) + "\n" + listing.url, accountKeyboard(account->id)); return true; }
             if (current == 5) { if (!looksLikeUrl(message.text)) { bot.sendMessage(message.chatId, "❌ Нужна ссылка на объявление."); return true; } pendingListingUrl[message.chatId] = message.text; state[message.chatId] = 6; bot.sendMessage(message.chatId, "Напиши сообщение продавцу по-русски."); return true; }
             if (current == 6) {
                 const auto account = db.getCustoJustoAccount(pendingAccount[message.chatId]); const std::string url = pendingListingUrl[message.chatId]; state[message.chatId] = 0; pendingAccount.erase(message.chatId); pendingListingUrl.erase(message.chatId);
