@@ -54,42 +54,39 @@ async function visible(page,selectors){for(const q of selectors){const all=page.
 async function send(page,url,text){
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
-  const fieldSelectors=['textarea','[contenteditable="true"]','input[name*="message" i]','textarea[name*="message" i]'];
+  await page.waitForTimeout(700);
+  const fieldSelectors=['textarea','[contenteditable="true"]','input[name*="message" i]','textarea[name*="message" i]','[role="textbox"]'];
   let field=await visible(page,fieldSelectors);
   if(!field){
-    const contact=await visible(page,['button:has-text("mensagem")','a:has-text("mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")']);
+    const contact=await visible(page,['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]','[data-testid*="message" i]']);
     if(!contact)throw Error("CustoJusto contact button was not found on this listing");
-    await contact.click({noWaitAfter:true,timeout:15000});await page.waitForTimeout(700);
+    await contact.click({noWaitAfter:true,timeout:15000});
+    await page.waitForTimeout(900);
     field=await visible(page,fieldSelectors);
     if(!field){await page.waitForSelector(fieldSelectors.join(','),{state:"visible",timeout:20000});field=await visible(page,fieldSelectors)}
   }
   await field.fill(text,{timeout:15000});
+  const submitSelectors=['button[type="submit"]','input[type="submit"]','button:has-text("Enviar")','button:has-text("Send")','button[aria-label*="enviar" i]','button[title*="enviar" i]','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]'];
   const form=field.locator('xpath=ancestor::form[1]');
   let submit=null;
-  if(await form.count())submit=await visible(form,['button[type="submit"]','button:has-text("Enviar")','button:has-text("Send")','input[type="submit"]']);
-  if(!submit)throw Error("CustoJusto send button was not found inside the message form");
+  if(await form.count())submit=await visible(form,submitSelectors);
+  if(!submit)submit=await visible(page,submitSelectors);
+  let submitted=false;
+  if(submit)submitted=await submit.click({noWaitAfter:true,timeout:15000}).then(()=>true).catch(()=>false);
+  if(!submitted&&await form.count())submitted=await form.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);
+  if(!submitted)submitted=await field.press("Enter").then(()=>true).catch(()=>false);
+  if(!submitted)throw Error("CustoJusto message composer has no usable send action");
   const normalized=text.trim().replace(/\s+/g," ");
-  const encoded=encodeURIComponent(text).replace(/%20/g,'+');
-  const mutation=page.waitForResponse(r=>{
-    const method=r.request().method(),data=r.request().postData()||"";
-    if(!["POST","PUT","PATCH"].includes(method))return false;
-    let decoded=data;try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
-    return data.includes(text)||data.includes(encoded)||decoded.includes(text);
-  },{timeout:20000}).catch(()=>null);
-  await submit.click({noWaitAfter:true,timeout:15000});
   let proof="";
   for(let attempt=0;attempt<40&&!proof;attempt++){
     await page.waitForTimeout(250);
-    const response=await Promise.race([mutation,Promise.resolve(null)]);
-    if(response&&response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
-    if(response&&response.status()>=200&&response.status()<300)proof="network";
     const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
     if(successToast)proof="toast";
     const currentValue=await field.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>text);
     if(currentValue.trim()==="")proof="form-cleared";
     const found=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll((nodes,expected)=>nodes.some(n=>{
       const r=n.getBoundingClientRect(),s=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
-      return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"&&actual===expected;
+      return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"&&actual.includes(expected);
     }),normalized).catch(()=>false);
     if(found)proof="conversation";
   }
