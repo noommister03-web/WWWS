@@ -20,6 +20,14 @@ async function conversations(page,b){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
   await page.waitForTimeout(1500);
+  let previousConversationCount=-1,stableConversationPasses=0;
+  for(let pass=0;pass<40&&stableConversationPasses<3;pass++){
+    const count=await page.locator('a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]').count();
+    stableConversationPasses=count===previousConversationCount?stableConversationPasses+1:0;
+    previousConversationCount=count;
+    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
+    await page.waitForTimeout(500);
+  }
   const rows=await page.locator('a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]').evaluateAll((nodes,origin)=>nodes.map((n,i)=>{
     const anchor=n.matches('a[href]')?n:n.closest('a[href]');
     const raw=anchor?.getAttribute("href")||n.getAttribute("data-url")||n.getAttribute("data-href")||"";
@@ -41,6 +49,14 @@ async function messages(page,url){
   await cookies(page);
   await page.waitForTimeout(1500);
   const selector='article,[data-message-id],[data-testid*="message" i],[data-testid*="bubble" i],[class*="chat-message" i],[class*="message-bubble" i],[class*="messageItem" i],[class*="message-item" i],[class*="bubble" i]';
+  let previousMessageCount=-1,stableMessagePasses=0;
+  for(let pass=0;pass<80&&stableMessagePasses<4;pass++){
+    const count=await page.locator(selector).count();
+    stableMessagePasses=count===previousMessageCount?stableMessagePasses+1:0;
+    previousMessageCount=count;
+    await page.evaluate(()=>{const candidates=[...document.querySelectorAll('*')].filter(e=>{const s=getComputedStyle(e);return e.scrollHeight>e.clientHeight+50&&/(auto|scroll)/.test(s.overflowY)}).sort((a,b)=>b.clientHeight-a.clientHeight);(candidates[0]||document.scrollingElement).scrollTop=0;window.scrollTo(0,0)});
+    await page.waitForTimeout(500);
+  }
   const rows=await page.locator(selector).evaluateAll((ns,selector)=>{
     const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};
     const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c)));
@@ -57,7 +73,7 @@ async function messages(page,url){
     }).filter(x=>x.text&&x.text.length<4000);
   },selector);
   const seen=new Set;
-  return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true}).slice(-100);
+  return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true});
 }
 async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=0;i<count;i++){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
 async function send(page,url,text){
