@@ -41,7 +41,7 @@ async function conversations(page,b){
     return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог"};
   }).filter(Boolean),b);
   const seen=new Set;
-  return rows.map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100);
+  return rows.map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url));
 }
 function stableMessageId(row){return row.id||crypto.createHash("sha256").update(`${row.incoming?"in":"out"}|${row.timestamp}|${row.text}`).digest("hex").slice(0,24)}
 async function messages(page,url){
