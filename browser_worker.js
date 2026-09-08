@@ -15,8 +15,41 @@ async function session(account){const key=id(account);if(contexts.has(key))retur
 async function cookies(page){for(const q of ["#CybotCookiebotDialogBodyButtonDecline","#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll","button:has-text('Aceitar e fechar')"]){const b=page.locator(q).first();if(await b.isVisible().catch(()=>false)){await b.click().catch(()=>{});return}}}
 async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))return false;if(await page.locator('a[href*="login"],a[href*="entrar"],button:has-text("Entrar")').first().isVisible().catch(()=>false))return false;return(await page.locator('a[href*="conta"],a[href*="account"],a[href*="mensagens"],a[href*="messages"]').count())>0}
 async function use(req,res,fn){try{const s=await session(req.body?.accountId);await fn(s.page,base(req.body?.baseUrl))}catch(e){if(!res.headersSent)res.status(500).json({error:e.message})}}
-async function conversations(page,b){await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(page);const rows=await page.locator('a[href*="mensagens"],a[href*="messages"],a[href*="conversa"],a[href*="conversation"]').evaluateAll(ns=>ns.map((n,i)=>({id:n.getAttribute("data-conversation-id")||n.getAttribute("data-id")||`conversation-${i}`,url:n.href||n.getAttribute("href")||"",title:(n.innerText||n.textContent||"").trim().replace(/\s+/g," ")})).filter(x=>x.url));const seen=new Set;return rows.map(x=>({...x,url:new URL(x.url,b).toString(),listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100)}
-async function messages(page,url){await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});const rows=await page.locator('article,[data-message-id],.message,[class*="message"]').evaluateAll(ns=>ns.map((n,i)=>({id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||`message-${i}`,sender:n.getAttribute("data-sender")||"",text:(n.innerText||n.textContent||"").trim().replace(/\s+/g," "),timestamp:n.querySelector("time")?.getAttribute("datetime")||"",incoming:!/outgoing|sent|self/i.test(`${n.className} ${n.getAttribute("data-direction")||""}`)})).filter(x=>x.text));return rows.slice(-100).map(x=>({...x,conversationId:url}))}
+async function conversations(page,b){
+  await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+  await cookies(page);
+  await page.waitForTimeout(1000);
+  const rows=await page.locator('a[href]').evaluateAll((links,origin)=>links.map((n,i)=>{
+    const href=n.href||n.getAttribute("href")||"";
+    let pathname="";try{pathname=new URL(href,origin).pathname.toLowerCase()}catch{}
+    const text=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+    return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-id")||`conversation-${i}`,url:href,title:text,pathname};
+  }).filter(x=>x.url&&x.title&&x.pathname!=="/mensagens"&&x.pathname!=="/messages"&&/(mensagen|message|conversa|conversation|chat)/.test(x.pathname)),b);
+  const seen=new Set;
+  return rows.map(x=>({id:x.id,url:new URL(x.url,b).toString(),title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100);
+}
+function stableMessageId(row){return row.id||crypto.createHash("sha256").update(`${row.incoming?"in":"out"}|${row.timestamp}|${row.text}`).digest("hex").slice(0,24)}
+async function messages(page,url){
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+  await cookies(page);
+  await page.waitForTimeout(800);
+  const rows=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll(ns=>{
+    const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};
+    const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]')&&visible(c)));
+    return candidates.map(n=>{
+      const text=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+      const meta=`${n.className||""} ${n.getAttribute("data-direction")||""} ${n.getAttribute("data-testid")||""} ${n.getAttribute("aria-label")||""}`.toLowerCase();
+      const rect=n.getBoundingClientRect(),style=getComputedStyle(n);
+      let incoming=true;
+      if(/outgoing|sent|self|mine|own|justify-end|items-end|right/.test(meta)||style.alignSelf==="flex-end")incoming=false;
+      else if(/incoming|received|other|justify-start|items-start|left/.test(meta)||style.alignSelf==="flex-start")incoming=true;
+      else if(rect.width<innerWidth*.82)incoming=(rect.left+rect.width/2)<innerWidth/2;
+      return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender], [class*="sender" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};
+    }).filter(x=>x.text&&x.text.length<4000);
+  });
+  const seen=new Set;
+  return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true}).slice(-100);
+}
 async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=0;i<count;i++){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
 async function send(page,url,text){
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
@@ -26,24 +59,28 @@ async function send(page,url,text){
   if(!field){
     const contact=await visible(page,['button:has-text("mensagem")','a:has-text("mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")']);
     if(!contact)throw Error("CustoJusto contact button was not found on this listing");
-    await contact.click();
-    await page.waitForTimeout(400);
+    await contact.click();await page.waitForTimeout(500);
     field=await visible(page,fieldSelectors);
-    if(!field){
-      try{await page.waitForSelector('textarea,[contenteditable="true"],input[name*="message" i],textarea[name*="message" i]',{state:"visible",timeout:TIMEOUT});}catch{
-        const title=(await page.title().catch(()=>""));
-        const text=(await page.locator('body').innerText().catch(()=>"")).replace(/\s+/g," ").slice(0,500);
-        throw Error(`CustoJusto message form did not open after contacting the seller (page: ${title}; url: ${page.url()}; visible text: ${text})`);
-      }
-      field=await visible(page,fieldSelectors);
-    }
+    if(!field){await page.waitForSelector(fieldSelectors.join(','),{state:"visible",timeout:TIMEOUT});field=await visible(page,fieldSelectors)}
   }
   await field.fill(text);
   const submit=await visible(page,['button[type="submit"]','button:has-text("Enviar")','button:has-text("Send")']);
   if(!submit)throw Error("CustoJusto send button was not found after the message form opened");
+  const mutation=page.waitForResponse(r=>{
+    const method=r.request().method(),data=r.request().postData()||"",u=r.url().toLowerCase();
+    return ["POST","PUT","PATCH"].includes(method)&&(data.includes(text)||/(mensagen|message|conversa|conversation|chat)/.test(u));
+  },{timeout:12000}).catch(()=>null);
   await submit.click();
-  return{ok:true,url:page.url()}
+  const response=await mutation;
+  await page.waitForTimeout(700);
+  const currentValue=await field.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>"");
+  const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
+  const acceptedResponse=Boolean(response&&response.status()>=200&&response.status()<300);
+  if(!acceptedResponse&&!successToast&&currentValue.trim()===text.trim())throw Error("CustoJusto did not confirm that the message was sent");
+  if(response&&response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
+  return{ok:true,verified:acceptedResponse||successToast||currentValue.trim()==="",url:page.url()};
 }
+
 app.get("/health",(_,res)=>res.json({ok:true,activeProfiles:contexts.size}));
 app.post("/manual/prepare",auth,async(req,res)=>{try{const account=id(req.body?.accountId),email=String(req.body?.email||"").trim(),password=String(req.body?.password||"");if(!email||!password)return res.status(400).json({error:"email and password are required"});const s=await session(account);await s.page.goto(new URL("/login",base(req.body?.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const emailField=s.page.locator("#username");const passwordField=s.page.locator("#password");await emailField.waitFor({state:"visible"});await emailField.fill(email);await passwordField.waitFor({state:"visible"});await passwordField.fill(password);res.json({ok:true})}catch(e){res.status(500).json({error:e.message})}});
 app.get("/manual/open",async(req,res)=>{try{const s=await session(req.query.accountId);await s.page.goto(new URL("/login",base(req.query.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const mobile=String(req.query.mobile||"")==="1";res.redirect(302,mobile?"/vnc.html?autoconnect=true&resize=scale&show_dot=true":"/vnc.html?autoconnect=true&resize=remote")}catch(e){res.status(500).type("text/plain").send(`Unable to open browser: ${e.message}`)}});
