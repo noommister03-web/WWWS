@@ -43,7 +43,6 @@ async function conversations(page,b){
   const seen=new Set;
   return rows.map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url));
 }
-function stableMessageId(row){return row.id||crypto.createHash("sha256").update(`${row.incoming?"in":"out"}|${row.timestamp}|${row.text}`).digest("hex").slice(0,24)}
 async function messages(page,url){
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
@@ -61,7 +60,7 @@ async function messages(page,url){
     const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};
     const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c)));
     return candidates.map(n=>{
-      const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,[aria-hidden="true"]').forEach(x=>x.remove());
+      const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,time,[aria-hidden="true"],[class*="timestamp" i],[class*="time" i]').forEach(x=>x.remove());
       const text=(clone.innerText||clone.textContent||"").trim().replace(/\s+/g," ");
       let p=n,meta="";for(let i=0;p&&i<4;i++,p=p.parentElement)meta+=` ${p.className||""} ${p.getAttribute?.("data-direction")||""} ${p.getAttribute?.("data-testid")||""} ${p.getAttribute?.("aria-label")||""}`;
       meta=meta.toLowerCase();const rect=n.getBoundingClientRect(),style=getComputedStyle(n);
@@ -72,8 +71,13 @@ async function messages(page,url){
       return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender],[class*="sender" i],[class*="author" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};
     }).filter(x=>x.text&&x.text.length<4000);
   },selector);
-  const seen=new Set;
-  return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true});
+  const seen=new Set,occurrences=new Map;
+  return rows.map(x=>{
+    const canonical=`${x.incoming?"in":"out"}|${x.sender}|${x.text}`;
+    const occurrence=(occurrences.get(canonical)||0)+1;occurrences.set(canonical,occurrence);
+    const stable=x.id||crypto.createHash("sha256").update(`${url}|${canonical}|${occurrence}`).digest("hex").slice(0,32);
+    return{...x,id:stable,conversationId:url};
+  }).filter(x=>{if(seen.has(x.id))return false;seen.add(x.id);return true});
 }
 async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=0;i<count;i++){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
 async function send(page,url,text){
