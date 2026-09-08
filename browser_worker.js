@@ -55,23 +55,30 @@ async function visible(page,selectors){for(const q of selectors){const all=page.
 async function send(page,url,text){
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
-  await page.waitForTimeout(700);
-  const fieldSelectors=['textarea','[contenteditable="true"]','input[name*="message" i]','textarea[name*="message" i]','[role="textbox"]'];
+  await page.waitForTimeout(1500);
+  const fieldSelectors=['textarea[name*="message" i]','textarea[placeholder*="mensagem" i]','[contenteditable="true"][role="textbox"]','textarea','[role="textbox"]'];
   let field=await visible(page,fieldSelectors);
   if(!field){
-    const contact=await visible(page,['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]','[data-testid*="message" i]']);
+    const contact=await visible(page,['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]']);
     if(!contact)throw Error("CustoJusto contact button was not found on this listing");
-    await contact.click({noWaitAfter:true,timeout:15000});
-    await page.waitForTimeout(900);
+    await contact.scrollIntoViewIfNeeded();
+    await contact.click({timeout:15000});
+    await page.waitForTimeout(1500);
     field=await visible(page,fieldSelectors);
-    if(!field){await page.waitForSelector(fieldSelectors.join(','),{state:"visible",timeout:20000});field=await visible(page,fieldSelectors)}
   }
-  await field.fill(text,{timeout:15000});
-  const submitSelectors=['button[type="submit"]','input[type="submit"]','button:has-text("Enviar")','button:has-text("Send")','button[aria-label*="enviar" i]','button[title*="enviar" i]','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]'];
-  const form=field.locator('xpath=ancestor::form[1]');
+  if(!field)throw Error("CustoJusto message field was not found");
+  await field.scrollIntoViewIfNeeded();
+  await field.click({timeout:15000});
+  await field.press(process.platform==="darwin"?"Meta+A":"Control+A").catch(()=>{});
+  await field.press("Backspace").catch(()=>{});
+  await field.type(text,{delay:35,timeout:TIMEOUT});
+  await page.waitForTimeout(1200);
+  const composer=field.locator('xpath=ancestor::*[self::form or @role="dialog" or contains(@class,"message") or contains(@class,"contact")][1]');
+  const submitSelectors=['button[type="submit"]:not([disabled])','button:has-text("Enviar"):not([disabled])','button[aria-label*="enviar" i]:not([disabled])','button[title*="enviar" i]:not([disabled])','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]:not([disabled])'];
   let submit=null;
-  if(await form.count())submit=await visible(form,submitSelectors);
+  if(await composer.count())submit=await visible(composer,submitSelectors);
   if(!submit)submit=await visible(page,submitSelectors);
+  if(!submit)throw Error("CustoJusto enabled send button was not found");
   const deliveryResponse=page.waitForResponse(response=>{
     const request=response.request();
     if(!["POST","PUT","PATCH"].includes(request.method()))return false;
@@ -79,46 +86,18 @@ async function send(page,url,text){
     let decoded=data;
     try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
     return data.includes(text)||decoded.includes(text)||decoded.includes(text.trim());
-  },{timeout:15000}).catch(()=>null);
-  let submitted=false;
-  if(submit)submitted=await submit.click({noWaitAfter:true,timeout:15000}).then(()=>true).catch(()=>false);
-  if(!submitted&&await form.count())submitted=await form.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);
-  if(!submitted)submitted=await field.press("Enter").then(()=>true).catch(()=>false);
-  if(!submitted)throw Error("CustoJusto message composer has no usable send action");
-  const normalized=text.trim().replace(/\s+/g," ");
-  let proof="";
+  },{timeout:20000}).catch(()=>null);
+  await submit.scrollIntoViewIfNeeded();
+  await submit.click({timeout:15000});
   const response=await deliveryResponse;
-  if(response){
-    if(response.status()===423){
-      const detail=(await response.text().catch(()=>"")).slice(0,300);
-      await page.waitForTimeout(10000);
-      await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
-      await cookies(page);
-      await page.waitForTimeout(1000);
-      await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
-      await cookies(page);
-      await page.waitForTimeout(1000);
-      const retryField=await visible(page,fieldSelectors);
-      if(!retryField){const e=Error(`CustoJusto chat is locked (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
-      await retryField.fill(text,{timeout:15000});
-      const retryForm=retryField.locator('xpath=ancestor::form[1]');
-      let retrySubmit=null;
-      if(await retryForm.count())retrySubmit=await visible(retryForm,submitSelectors);
-      if(!retrySubmit)retrySubmit=await visible(page,submitSelectors);
-      const retryResponsePromise=page.waitForResponse(r=>["POST","PUT","PATCH"].includes(r.request().method()),{timeout:15000}).catch(()=>null);
-      let retried=false;
-      if(retrySubmit)retried=await retrySubmit.click({noWaitAfter:true,timeout:15000}).then(()=>true).catch(()=>false);
-      if(!retried&&await retryForm.count())retried=await retryForm.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);
-      if(!retried){const e=Error("CustoJusto chat stayed locked after a clean reopen");e.status=423;throw e;}
-      const retryResponse=await retryResponsePromise;
-      if(retryResponse&&retryResponse.status()===423){const retryDetail=(await retryResponse.text().catch(()=>"")).slice(0,300);const e=Error(`CustoJusto itself locked this chat (HTTP 423)${retryDetail?`: ${retryDetail}`:""}`);e.status=423;throw e;}
-      if(retryResponse&&retryResponse.status()>=400)throw Error(`CustoJusto rejected retry with HTTP ${retryResponse.status()}`);
-      if(retryResponse&&retryResponse.status()>=200&&retryResponse.status()<300)proof="network-retry";
-    }else if(response.status()>=400){
-      const detail=(await response.text().catch(()=>"")).slice(0,300);
-      throw Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
-    }else if(response.status()>=200&&response.status()<300)proof="network";
+  if(response&&response.status()>=400){
+    const detail=(await response.text().catch(()=>"")).slice(0,500);
+    const e=Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
+    e.status=response.status();
+    throw e;
   }
+  const normalized=text.trim().replace(/\s+/g," ");
+  let proof=response&&response.status()>=200&&response.status()<300?"network":"";
   for(let attempt=0;attempt<40&&!proof;attempt++){
     await page.waitForTimeout(250);
     const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
@@ -126,13 +105,12 @@ async function send(page,url,text){
     const currentValue=await field.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>text);
     if(currentValue.trim()==="")proof="form-cleared";
     const found=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll((nodes,expected)=>nodes.some(n=>{
-      const r=n.getBoundingClientRect(),s=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
-      return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"&&actual.includes(expected);
+      const r=n.getBoundingClientRect(),style=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+      return r.width>20&&r.height>10&&style.display!=="none"&&style.visibility!=="hidden"&&actual.includes(expected);
     }),normalized).catch(()=>false);
     if(found)proof="conversation";
   }
-  if(!proof)return{ok:true,verified:false,proof:"submitted-unverified",url:page.url()};
-  return{ok:true,verified:true,proof,url:page.url()};
+  return{ok:true,verified:Boolean(proof),proof:proof||"submitted-unverified",url:page.url()};
 }
 
 app.get("/health",(_,res)=>res.json({ok:true,activeProfiles:contexts.size}));
