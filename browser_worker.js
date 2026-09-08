@@ -15,7 +15,7 @@ async function session(account){const key=id(account);if(contexts.has(key))retur
 async function exclusive(s,work){const previous=s.queue.catch(()=>{});let release;s.queue=new Promise(resolve=>{release=resolve});await previous;try{return await work()}finally{release()}}
 async function cookies(page){for(const q of ["#CybotCookiebotDialogBodyButtonDecline","#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll","button:has-text('Aceitar e fechar')"]){const b=page.locator(q).first();if(await b.isVisible().catch(()=>false)){await b.click().catch(()=>{});return}}}
 async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))return false;if(await page.locator('a[href*="login"],a[href*="entrar"],button:has-text("Entrar")').first().isVisible().catch(()=>false))return false;return(await page.locator('a[href*="conta"],a[href*="account"],a[href*="mensagens"],a[href*="messages"]').count())>0}
-async function use(req,res,fn){try{const s=await session(req.body?.accountId);await exclusive(s,()=>fn(s.page,base(req.body?.baseUrl)))}catch(e){if(!res.headersSent)res.status(500).json({error:e.message})}}
+async function use(req,res,fn){try{const s=await session(req.body?.accountId);await exclusive(s,()=>fn(s.page,base(req.body?.baseUrl)))}catch(e){if(!res.headersSent)res.status(Number(e.status)||500).json({error:e.message,status:Number(e.status)||500})}}
 async function conversations(page,b){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
@@ -91,11 +91,15 @@ async function send(page,url,text){
   if(response){
     if(response.status()===423){
       const detail=(await response.text().catch(()=>"")).slice(0,300);
-      await page.waitForTimeout(4000);
-      await page.reload({waitUntil:"domcontentloaded",timeout:TIMEOUT});
+      await page.waitForTimeout(10000);
+      await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
       await cookies(page);
+      await page.waitForTimeout(1000);
+      await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+      await cookies(page);
+      await page.waitForTimeout(1000);
       const retryField=await visible(page,fieldSelectors);
-      if(!retryField)throw Error(`CustoJusto chat is locked (HTTP 423)${detail?`: ${detail}`:""}`);
+      if(!retryField){const e=Error(`CustoJusto chat is locked (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
       await retryField.fill(text,{timeout:15000});
       const retryForm=retryField.locator('xpath=ancestor::form[1]');
       let retrySubmit=null;
@@ -105,9 +109,9 @@ async function send(page,url,text){
       let retried=false;
       if(retrySubmit)retried=await retrySubmit.click({noWaitAfter:true,timeout:15000}).then(()=>true).catch(()=>false);
       if(!retried&&await retryForm.count())retried=await retryForm.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);
-      if(!retried)throw Error("CustoJusto chat stayed locked after refresh");
+      if(!retried){const e=Error("CustoJusto chat stayed locked after a clean reopen");e.status=423;throw e;}
       const retryResponse=await retryResponsePromise;
-      if(retryResponse&&retryResponse.status()===423)throw Error("CustoJusto chat is temporarily locked (HTTP 423); wait and retry once");
+      if(retryResponse&&retryResponse.status()===423){const retryDetail=(await retryResponse.text().catch(()=>"")).slice(0,300);const e=Error(`CustoJusto itself locked this chat (HTTP 423)${retryDetail?`: ${retryDetail}`:""}`);e.status=423;throw e;}
       if(retryResponse&&retryResponse.status()>=400)throw Error(`CustoJusto rejected retry with HTTP ${retryResponse.status()}`);
       if(retryResponse&&retryResponse.status()>=200&&retryResponse.status()<300)proof="network-retry";
     }else if(response.status()>=400){
