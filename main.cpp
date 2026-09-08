@@ -14,7 +14,7 @@
 namespace {
 bool email(const std::string&v){auto a=v.find('@'),d=v.rfind('.');return a!=std::string::npos&&d!=std::string::npos&&a>0&&d>a+1&&d+1<v.size();}
 bool url(const std::string&v){return v.rfind("http://",0)==0||v.rfind("https://",0)==0;}
-std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open?accountId="+std::to_string(id)+"&mobile=1";}
+std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open/"+std::to_string(id)+"?mobile=1";}
 std::string status(const CustoJustoAccount&a){if(a.loggedIn)return"🟢 Сессия активна";if(!a.enabled)return"⏸ Приостановлен";return"🔴 Требуется вход";}
 std::string digits(const std::string&v){std::string o;for(unsigned char c:v)if(std::isdigit(c))o.push_back(c);return o;}
 std::string salesPrompt(const std::string&wa){std::string p=R"PROMPT(Ты пишешь продавцам CustoJusto от лица реального частного покупателя из Португалии. Возвращай ТОЛЬКО одно готовое сообщение на естественном европейском португальском, без кавычек, пояснений, списков и подписи.
