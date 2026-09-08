@@ -19,35 +19,43 @@ async function use(req,res,fn){try{const s=await session(req.body?.accountId);aw
 async function conversations(page,b){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
-  await page.waitForTimeout(1000);
-  const rows=await page.locator('a[href]').evaluateAll((links,origin)=>links.map((n,i)=>{
-    const href=n.href||n.getAttribute("href")||"";
-    let pathname="";try{pathname=new URL(href,origin).pathname.toLowerCase()}catch{}
-    const text=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
-    return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-id")||`conversation-${i}`,url:href,title:text,pathname};
-  }).filter(x=>x.url&&x.title&&x.pathname!=="/mensagens"&&x.pathname!=="/messages"&&/(mensagen|message|conversa|conversation|chat)/.test(x.pathname)),b);
+  await page.waitForTimeout(1500);
+  const rows=await page.locator('a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]').evaluateAll((nodes,origin)=>nodes.map((n,i)=>{
+    const anchor=n.matches('a[href]')?n:n.closest('a[href]');
+    const raw=anchor?.getAttribute("href")||n.getAttribute("data-url")||n.getAttribute("data-href")||"";
+    let u;try{u=new URL(raw,origin)}catch{return null}
+    const text=(n.innerText||n.textContent||anchor?.innerText||"").trim().replace(/\s+/g," ");
+    const marker=`${n.getAttribute("data-conversation-id")||""} ${n.getAttribute("data-chat-id")||""} ${n.getAttribute("data-testid")||""} ${n.className||""}`.toLowerCase();
+    const route=`${u.pathname}${u.search}${u.hash}`.toLowerCase();
+    const isInboxRoot=/^\/(mensagens|messages)\/?$/.test(u.pathname.toLowerCase())&&!u.search&&!u.hash;
+    const looksLikeThread=!isInboxRoot&&(/(mensagen|message|conversa|conversation|chat)/.test(route)||/(conversation|chat|thread|message)/.test(marker));
+    if(!looksLikeThread)return null;
+    return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог"};
+  }).filter(Boolean),b);
   const seen=new Set;
-  return rows.map(x=>({id:x.id,url:new URL(x.url,b).toString(),title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100);
+  return rows.map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100);
 }
 function stableMessageId(row){return row.id||crypto.createHash("sha256").update(`${row.incoming?"in":"out"}|${row.timestamp}|${row.text}`).digest("hex").slice(0,24)}
 async function messages(page,url){
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
-  await page.waitForTimeout(800);
-  const rows=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll(ns=>{
+  await page.waitForTimeout(1500);
+  const selector='article,[data-message-id],[data-testid*="message" i],[data-testid*="bubble" i],[class*="chat-message" i],[class*="message-bubble" i],[class*="messageItem" i],[class*="message-item" i],[class*="bubble" i]';
+  const rows=await page.locator(selector).evaluateAll((ns,selector)=>{
     const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};
-    const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]')&&visible(c)));
+    const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c)));
     return candidates.map(n=>{
-      const text=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
-      const meta=`${n.className||""} ${n.getAttribute("data-direction")||""} ${n.getAttribute("data-testid")||""} ${n.getAttribute("aria-label")||""}`.toLowerCase();
-      const rect=n.getBoundingClientRect(),style=getComputedStyle(n);
+      const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,[aria-hidden="true"]').forEach(x=>x.remove());
+      const text=(clone.innerText||clone.textContent||"").trim().replace(/\s+/g," ");
+      let p=n,meta="";for(let i=0;p&&i<4;i++,p=p.parentElement)meta+=` ${p.className||""} ${p.getAttribute?.("data-direction")||""} ${p.getAttribute?.("data-testid")||""} ${p.getAttribute?.("aria-label")||""}`;
+      meta=meta.toLowerCase();const rect=n.getBoundingClientRect(),style=getComputedStyle(n);
       let incoming=true;
-      if(/outgoing|sent|self|mine|own|justify-end|items-end|right/.test(meta)||style.alignSelf==="flex-end")incoming=false;
-      else if(/incoming|received|other|justify-start|items-start|left/.test(meta)||style.alignSelf==="flex-start")incoming=true;
-      else if(rect.width<innerWidth*.82)incoming=(rect.left+rect.width/2)<innerWidth/2;
-      return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender], [class*="sender" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};
+      if(/outgoing|sent|self|mine|own|from-me|message--right|justify-end|items-end/.test(meta)||style.alignSelf==="flex-end")incoming=false;
+      else if(/incoming|received|other|from-them|message--left|justify-start|items-start/.test(meta)||style.alignSelf==="flex-start")incoming=true;
+      else incoming=(rect.left+rect.width/2)<innerWidth/2;
+      return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender],[class*="sender" i],[class*="author" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};
     }).filter(x=>x.text&&x.text.length<4000);
-  });
+  },selector);
   const seen=new Set;
   return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true}).slice(-100);
 }
