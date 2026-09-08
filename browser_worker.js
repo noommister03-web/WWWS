@@ -59,26 +59,39 @@ async function send(page,url,text){
   if(!field){
     const contact=await visible(page,['button:has-text("mensagem")','a:has-text("mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")']);
     if(!contact)throw Error("CustoJusto contact button was not found on this listing");
-    await contact.click();await page.waitForTimeout(500);
+    await contact.click();await page.waitForTimeout(700);
     field=await visible(page,fieldSelectors);
     if(!field){await page.waitForSelector(fieldSelectors.join(','),{state:"visible",timeout:TIMEOUT});field=await visible(page,fieldSelectors)}
   }
   await field.fill(text);
-  const submit=await visible(page,['button[type="submit"]','button:has-text("Enviar")','button:has-text("Send")']);
-  if(!submit)throw Error("CustoJusto send button was not found after the message form opened");
+  const form=field.locator('xpath=ancestor::form[1]');
+  let submit=null;
+  if(await form.count())submit=await visible(form,['button[type="submit"]','button:has-text("Enviar")','button:has-text("Send")','input[type="submit"]']);
+  if(!submit)submit=await visible(page,['button[type="submit"]:visible','button:has-text("Enviar"):visible','button:has-text("Send"):visible']);
+  if(!submit)throw Error("CustoJusto send button was not found inside the message form");
+  const normalized=text.trim().replace(/\s+/g," ");
+  const encoded=encodeURIComponent(text).replace(/%20/g,'+');
   const mutation=page.waitForResponse(r=>{
-    const method=r.request().method(),data=r.request().postData()||"",u=r.url().toLowerCase();
-    return ["POST","PUT","PATCH"].includes(method)&&(data.includes(text)||/(mensagen|message|conversa|conversation|chat)/.test(u));
-  },{timeout:12000}).catch(()=>null);
+    const method=r.request().method(),data=r.request().postData()||"";
+    if(!["POST","PUT","PATCH"].includes(method))return false;
+    let decoded=data;try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
+    return data.includes(text)||data.includes(encoded)||decoded.includes(text);
+  },{timeout:15000}).catch(()=>null);
   await submit.click();
   const response=await mutation;
-  await page.waitForTimeout(700);
-  const currentValue=await field.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>"");
+  if(response&&response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
+  let foundInConversation=false;
+  for(let attempt=0;attempt<12&&!foundInConversation;attempt++){
+    await page.waitForTimeout(500);
+    foundInConversation=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll((nodes,expected)=>nodes.some(n=>{
+      const r=n.getBoundingClientRect(),s=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+      return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"&&actual===expected;
+    }),normalized).catch(()=>false);
+  }
   const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
   const acceptedResponse=Boolean(response&&response.status()>=200&&response.status()<300);
-  if(!acceptedResponse&&!successToast&&currentValue.trim()===text.trim())throw Error("CustoJusto did not confirm that the message was sent");
-  if(response&&response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
-  return{ok:true,verified:acceptedResponse||successToast||currentValue.trim()==="",url:page.url()};
+  if(!acceptedResponse&&!successToast&&!foundInConversation)throw Error("CustoJusto did not confirm delivery; message was not marked as sent");
+  return{ok:true,verified:true,proof:foundInConversation?"conversation":successToast?"toast":"network",url:page.url()};
 }
 
 app.get("/health",(_,res)=>res.json({ok:true,activeProfiles:contexts.size}));
