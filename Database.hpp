@@ -183,6 +183,7 @@ public:
     std::optional<CustoJustoDraftRecord> getCustoJustoDraft(long long id);
     bool updateCustoJustoDraftText(long long id, const std::string& text);
     bool setCustoJustoDraftStatus(long long id, const std::string& status);
+    bool claimCustoJustoDraftForSending(long long id);
 
 private:
     sqlite3* db_ = nullptr;
