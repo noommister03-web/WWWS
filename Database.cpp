@@ -278,6 +278,23 @@ void Database::initialize() {
         idx_custojusto_messages_conversation
         ON custojusto_messages(conversation_id, id);
     )SQL");
+    execute(R"SQL(
+        CREATE TABLE IF NOT EXISTS custojusto_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            conversation_id INTEGER NOT NULL DEFAULT 0,
+            target_url TEXT NOT NULL,
+            text TEXT NOT NULL,
+            incoming_text TEXT NOT NULL DEFAULT '',
+            translated_incoming TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(account_id) REFERENCES custojusto_accounts(id) ON DELETE CASCADE,
+            FOREIGN KEY(conversation_id) REFERENCES custojusto_conversations(id) ON DELETE CASCADE
+        );
+    )SQL");
+    execute("CREATE INDEX IF NOT EXISTS idx_custojusto_drafts_status ON custojusto_drafts(status, created_at DESC);");
+
 }
 
 bool Database::isUpdateProcessed(
@@ -1141,3 +1158,21 @@ std::vector<CustoJustoMessageRecord> Database::getCustoJustoMessages(
     std::reverse(rows.begin(), rows.end());
     return rows;
 }
+
+
+std::vector<CustoJustoConversationRecord> Database::getCustoJustoConversations(long long accountId, int limit) {
+    std::vector<CustoJustoConversationRecord> rows;
+    sqlite3_stmt* s = nullptr;
+    const char* sql = "SELECT id,account_id,conversation_url,listing_url,listing_title,contact_name,last_message_id,last_message_text,last_message_at,unread,created_at,updated_at FROM custojusto_conversations WHERE account_id=? ORDER BY updated_at DESC LIMIT ?;";
+    int rc=sqlite3_prepare_v2(db_,sql,-1,&s,nullptr); checkSqlite(rc,db_,"prepare conversations list");
+    sqlite3_bind_int64(s,1,accountId); sqlite3_bind_int(s,2,limit);
+    while((rc=sqlite3_step(s))==SQLITE_ROW){ CustoJustoConversationRecord r; r.id=sqlite3_column_int64(s,0);r.accountId=sqlite3_column_int64(s,1);r.conversationUrl=columnText(s,2);r.listingUrl=columnText(s,3);r.listingTitle=columnText(s,4);r.contactName=columnText(s,5);r.lastMessageId=columnText(s,6);r.lastMessageText=columnText(s,7);r.lastMessageAt=sqlite3_column_int64(s,8);r.unread=sqlite3_column_int(s,9)!=0;r.createdAt=sqlite3_column_int64(s,10);r.updatedAt=sqlite3_column_int64(s,11);rows.push_back(std::move(r)); }
+    if(rc!=SQLITE_DONE){sqlite3_finalize(s);checkSqlite(rc,db_,"read conversations list");} sqlite3_finalize(s); return rows;
+}
+
+long long Database::createCustoJustoDraft(long long accountId,long long conversationId,const std::string& targetUrl,const std::string& text,const std::string& incomingText,const std::string& translatedIncoming){
+    sqlite3_stmt*s=nullptr;const char*sql="INSERT INTO custojusto_drafts(account_id,conversation_id,target_url,text,incoming_text,translated_incoming,status,created_at) VALUES(?,?,?,?,?,?,'pending',strftime('%s','now'));";int rc=sqlite3_prepare_v2(db_,sql,-1,&s,nullptr);checkSqlite(rc,db_,"prepare draft insert");sqlite3_bind_int64(s,1,accountId);if(conversationId>0)sqlite3_bind_int64(s,2,conversationId);else sqlite3_bind_null(s,2);sqlite3_bind_text(s,3,targetUrl.c_str(),-1,SQLITE_TRANSIENT);sqlite3_bind_text(s,4,text.c_str(),-1,SQLITE_TRANSIENT);sqlite3_bind_text(s,5,incomingText.c_str(),-1,SQLITE_TRANSIENT);sqlite3_bind_text(s,6,translatedIncoming.c_str(),-1,SQLITE_TRANSIENT);rc=sqlite3_step(s);checkSqlite(rc,db_,"insert draft");sqlite3_finalize(s);return sqlite3_last_insert_rowid(db_);
+}
+std::optional<CustoJustoDraftRecord> Database::getCustoJustoDraft(long long id){sqlite3_stmt*s=nullptr;const char*sql="SELECT id,account_id,COALESCE(conversation_id,0),target_url,text,incoming_text,translated_incoming,status,created_at FROM custojusto_drafts WHERE id=?;";int rc=sqlite3_prepare_v2(db_,sql,-1,&s,nullptr);checkSqlite(rc,db_,"prepare draft query");sqlite3_bind_int64(s,1,id);rc=sqlite3_step(s);if(rc==SQLITE_DONE){sqlite3_finalize(s);return std::nullopt;}checkSqlite(rc,db_,"read draft");CustoJustoDraftRecord r;r.id=sqlite3_column_int64(s,0);r.accountId=sqlite3_column_int64(s,1);r.conversationId=sqlite3_column_int64(s,2);r.targetUrl=columnText(s,3);r.text=columnText(s,4);r.incomingText=columnText(s,5);r.translatedIncoming=columnText(s,6);r.status=columnText(s,7);r.createdAt=sqlite3_column_int64(s,8);sqlite3_finalize(s);return r;}
+bool Database::updateCustoJustoDraftText(long long id,const std::string& text){sqlite3_stmt*s=nullptr;int rc=sqlite3_prepare_v2(db_,"UPDATE custojusto_drafts SET text=?,status='pending' WHERE id=?;",-1,&s,nullptr);checkSqlite(rc,db_,"prepare draft update");sqlite3_bind_text(s,1,text.c_str(),-1,SQLITE_TRANSIENT);sqlite3_bind_int64(s,2,id);rc=sqlite3_step(s);checkSqlite(rc,db_,"update draft");sqlite3_finalize(s);return sqlite3_changes(db_)>0;}
+bool Database::setCustoJustoDraftStatus(long long id,const std::string& status){sqlite3_stmt*s=nullptr;int rc=sqlite3_prepare_v2(db_,"UPDATE custojusto_drafts SET status=? WHERE id=?;",-1,&s,nullptr);checkSqlite(rc,db_,"prepare draft status");sqlite3_bind_text(s,1,status.c_str(),-1,SQLITE_TRANSIENT);sqlite3_bind_int64(s,2,id);rc=sqlite3_step(s);checkSqlite(rc,db_,"update draft status");sqlite3_finalize(s);return sqlite3_changes(db_)>0;}
