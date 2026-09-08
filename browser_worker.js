@@ -11,10 +11,11 @@ const TIMEOUT=Number(process.env.CJ_ACTION_TIMEOUT_MS||60000), contexts=new Map(
 function id(v){v=String(v||"").trim();if(!/^[A-Za-z0-9_-]{1,100}$/.test(v))throw Error("Invalid account id");return v}
 function base(v){const u=new URL(String(v||DEFAULT_BASE));if(!/^https?:$/.test(u.protocol))throw Error("Invalid base URL");return u.origin}
 function auth(req,res,next){if(!SECRET)return res.status(503).json({error:"BROWSER_WORKER_SHARED_SECRET is not configured"});const a=Buffer.from(req.get("x-worker-secret")||""),b=Buffer.from(SECRET);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(401).json({error:"Unauthorized"});next()}
-async function session(account){const key=id(account);if(contexts.has(key))return contexts.get(key);const profile=path.join(ROOT,key);await fs.mkdir(profile,{recursive:true});const context=await chromium.launchPersistentContext(profile,{headless:false,viewport:{width:1365,height:900},timeout:Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS||120000),args:["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]});const page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(TIMEOUT);const s={context,page};contexts.set(key,s);context.on("close",()=>contexts.delete(key));return s}
+async function session(account){const key=id(account);if(contexts.has(key))return contexts.get(key);const profile=path.join(ROOT,key);await fs.mkdir(profile,{recursive:true});const context=await chromium.launchPersistentContext(profile,{headless:false,viewport:{width:1365,height:900},timeout:Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS||120000),args:["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]});const page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(TIMEOUT);const s={context,page,queue:Promise.resolve()};contexts.set(key,s);context.on("close",()=>contexts.delete(key));return s}
+async function exclusive(s,work){const previous=s.queue.catch(()=>{});let release;s.queue=new Promise(resolve=>{release=resolve});await previous;try{return await work()}finally{release()}}
 async function cookies(page){for(const q of ["#CybotCookiebotDialogBodyButtonDecline","#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll","button:has-text('Aceitar e fechar')"]){const b=page.locator(q).first();if(await b.isVisible().catch(()=>false)){await b.click().catch(()=>{});return}}}
 async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))return false;if(await page.locator('a[href*="login"],a[href*="entrar"],button:has-text("Entrar")').first().isVisible().catch(()=>false))return false;return(await page.locator('a[href*="conta"],a[href*="account"],a[href*="mensagens"],a[href*="messages"]').count())>0}
-async function use(req,res,fn){try{const s=await session(req.body?.accountId);await fn(s.page,base(req.body?.baseUrl))}catch(e){if(!res.headersSent)res.status(500).json({error:e.message})}}
+async function use(req,res,fn){try{const s=await session(req.body?.accountId);await exclusive(s,()=>fn(s.page,base(req.body?.baseUrl)))}catch(e){if(!res.headersSent)res.status(500).json({error:e.message})}}
 async function conversations(page,b){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
@@ -88,8 +89,31 @@ async function send(page,url,text){
   let proof="";
   const response=await deliveryResponse;
   if(response){
-    if(response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
-    if(response.status()>=200&&response.status()<300)proof="network";
+    if(response.status()===423){
+      const detail=(await response.text().catch(()=>"")).slice(0,300);
+      await page.waitForTimeout(4000);
+      await page.reload({waitUntil:"domcontentloaded",timeout:TIMEOUT});
+      await cookies(page);
+      const retryField=await visible(page,fieldSelectors);
+      if(!retryField)throw Error(`CustoJusto chat is locked (HTTP 423)${detail?`: ${detail}`:""}`);
+      await retryField.fill(text,{timeout:15000});
+      const retryForm=retryField.locator('xpath=ancestor::form[1]');
+      let retrySubmit=null;
+      if(await retryForm.count())retrySubmit=await visible(retryForm,submitSelectors);
+      if(!retrySubmit)retrySubmit=await visible(page,submitSelectors);
+      const retryResponsePromise=page.waitForResponse(r=>["POST","PUT","PATCH"].includes(r.request().method()),{timeout:15000}).catch(()=>null);
+      let retried=false;
+      if(retrySubmit)retried=await retrySubmit.click({noWaitAfter:true,timeout:15000}).then(()=>true).catch(()=>false);
+      if(!retried&&await retryForm.count())retried=await retryForm.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);
+      if(!retried)throw Error("CustoJusto chat stayed locked after refresh");
+      const retryResponse=await retryResponsePromise;
+      if(retryResponse&&retryResponse.status()===423)throw Error("CustoJusto chat is temporarily locked (HTTP 423); wait and retry once");
+      if(retryResponse&&retryResponse.status()>=400)throw Error(`CustoJusto rejected retry with HTTP ${retryResponse.status()}`);
+      if(retryResponse&&retryResponse.status()>=200&&retryResponse.status()<300)proof="network-retry";
+    }else if(response.status()>=400){
+      const detail=(await response.text().catch(()=>"")).slice(0,300);
+      throw Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
+    }else if(response.status()>=200&&response.status()<300)proof="network";
   }
   for(let attempt=0;attempt<40&&!proof;attempt++){
     await page.waitForTimeout(250);
