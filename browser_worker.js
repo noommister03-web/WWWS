@@ -71,6 +71,14 @@ async function send(page,url,text){
   let submit=null;
   if(await form.count())submit=await visible(form,submitSelectors);
   if(!submit)submit=await visible(page,submitSelectors);
+  const deliveryResponse=page.waitForResponse(response=>{
+    const request=response.request();
+    if(!["POST","PUT","PATCH"].includes(request.method()))return false;
+    const data=request.postData()||"";
+    let decoded=data;
+    try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
+    return data.includes(text)||decoded.includes(text)||decoded.includes(text.trim());
+  },{timeout:15000}).catch(()=>null);
   let submitted=false;
   if(submit)submitted=await submit.click({noWaitAfter:true,timeout:15000}).then(()=>true).catch(()=>false);
   if(!submitted&&await form.count())submitted=await form.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);
@@ -78,6 +86,11 @@ async function send(page,url,text){
   if(!submitted)throw Error("CustoJusto message composer has no usable send action");
   const normalized=text.trim().replace(/\s+/g," ");
   let proof="";
+  const response=await deliveryResponse;
+  if(response){
+    if(response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
+    if(response.status()>=200&&response.status()<300)proof="network";
+  }
   for(let attempt=0;attempt<40&&!proof;attempt++){
     await page.waitForTimeout(250);
     const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
@@ -90,7 +103,7 @@ async function send(page,url,text){
     }),normalized).catch(()=>false);
     if(found)proof="conversation";
   }
-  if(!proof)throw Error("CustoJusto did not confirm delivery; message was not marked as sent");
+  if(!proof)return{ok:true,verified:false,proof:"submitted-unverified",url:page.url()};
   return{ok:true,verified:true,proof,url:page.url()};
 }
 
