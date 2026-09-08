@@ -5,23 +5,101 @@ const fs = require("fs/promises");
 const path = require("path");
 const app = express();
 app.use(express.json({limit:"1mb"}));
-app.use(express.urlencoded({extended:false,limit:"64kb"}));
 const PORT=Number(process.env.BROWSER_WORKER_PORT||3001), SECRET=process.env.BROWSER_WORKER_SHARED_SECRET||"";
 const DEFAULT_BASE=process.env.CJ_BASE_URL||"https://www.custojusto.pt", ROOT=process.env.CJ_PROFILE_ROOT||"/app/data/custojusto/profiles";
 const TIMEOUT=Number(process.env.CJ_ACTION_TIMEOUT_MS||60000), contexts=new Map();
 function id(v){v=String(v||"").trim();if(!/^[A-Za-z0-9_-]{1,100}$/.test(v))throw Error("Invalid account id");return v}
 function base(v){const u=new URL(String(v||DEFAULT_BASE));if(!/^https?:$/.test(u.protocol))throw Error("Invalid base URL");return u.origin}
 function auth(req,res,next){if(!SECRET)return res.status(503).json({error:"BROWSER_WORKER_SHARED_SECRET is not configured"});const a=Buffer.from(req.get("x-worker-secret")||""),b=Buffer.from(SECRET);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(401).json({error:"Unauthorized"});next()}
-async function session(account){const key=id(account);if(contexts.has(key))return contexts.get(key);const profile=path.join(ROOT,key);await fs.mkdir(profile,{recursive:true});const context=await chromium.launchPersistentContext(profile,{headless:false,viewport:{width:1365,height:900},locale:"pt-PT",timezoneId:"Europe/Lisbon",timeout:Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS||120000),args:["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]});const page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(TIMEOUT);const s={context,page};contexts.set(key,s);context.on("close",()=>contexts.delete(key));return s}
+async function session(account){const key=id(account);if(contexts.has(key))return contexts.get(key);const profile=path.join(ROOT,key);await fs.mkdir(profile,{recursive:true});const context=await chromium.launchPersistentContext(profile,{headless:false,viewport:{width:1365,height:900},timeout:Number(process.env.CJ_BROWSER_LAUNCH_TIMEOUT_MS||120000),args:["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]});const page=context.pages()[0]||await context.newPage();page.setDefaultTimeout(TIMEOUT);const s={context,page};contexts.set(key,s);context.on("close",()=>contexts.delete(key));return s}
 async function cookies(page){for(const q of ["#CybotCookiebotDialogBodyButtonDecline","#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll","button:has-text('Aceitar e fechar')"]){const b=page.locator(q).first();if(await b.isVisible().catch(()=>false)){await b.click().catch(()=>{});return}}}
 async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))return false;if(await page.locator('a[href*="login"],a[href*="entrar"],button:has-text("Entrar")').first().isVisible().catch(()=>false))return false;return(await page.locator('a[href*="conta"],a[href*="account"],a[href*="mensagens"],a[href*="messages"]').count())>0}
 async function use(req,res,fn){try{const s=await session(req.body?.accountId);await fn(s.page,base(req.body?.baseUrl))}catch(e){if(!res.headersSent)res.status(500).json({error:e.message})}}
-async function conversations(page,b){await page.goto(new URL("/mensagens",b),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(page);const rows=await page.locator('a[href*="mensagens"],a[href*="messages"],a[href*="conversa"],a[href*="conversation"]').evaluateAll(ns=>ns.map((n,i)=>({id:n.getAttribute("data-conversation-id")||n.getAttribute("data-id")||`conversation-${i}`,url:n.href||n.getAttribute("href")||"",title:(n.innerText||n.textContent||"").trim().replace(/\s+/g," ")})).filter(x=>x.url));const seen=new Set;return rows.map(x=>({...x,url:new URL(x.url,b).toString(),listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100)}
-async function messages(page,url){await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});const rows=await page.locator('article,[data-message-id],.message,[class*="message"],[class*="chat"] [class*="bubble"]').evaluateAll(ns=>ns.map((n,i)=>{const cls=`${n.className||""} ${n.getAttribute("data-direction")||""} ${n.getAttribute("data-testid")||""}`;const sender=n.getAttribute("data-sender")||n.querySelector('[class*="sender"],[class*="author"]')?.textContent||"";const own=/outgoing|sent|self|mine|right|message--own|message-own/i.test(cls)||n.getAttribute("data-is-own")==="true";return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||`message-${i}`,sender:sender.trim(),text:(n.innerText||n.textContent||"").trim().replace(/\s+/g," "),timestamp:n.querySelector("time")?.getAttribute("datetime")||"",incoming:!own}}).filter(x=>x.text));return rows.slice(-100).map(x=>({...x,conversationId:url}))}
-async function send(page,url,text){await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});for(const q of ['a:has-text("Contactar")','button:has-text("Contactar")','a:has-text("Mensagem")','button:has-text("Mensagem")','a[href*="mensagens"]']){const x=page.locator(q).first();if(await x.isVisible().catch(()=>false)){await x.click().catch(()=>{});await page.waitForTimeout(600);break}}const f=page.locator('textarea,[contenteditable="true"],input[name*="message" i],textarea[name*="message" i]').first();await f.waitFor({state:"visible"});await f.fill(text);const selector='button[type="submit"],input[type="submit"],button:has-text("Enviar"),button:has-text("Send")';const form=f.locator('xpath=ancestor::form[1]');let submitted=false;const local=form.locator(selector).first();if(await local.isVisible().catch(()=>false))submitted=await local.click({noWaitAfter:true}).then(()=>true).catch(()=>false);if(!submitted){const buttons=page.locator(selector);for(let i=(await buttons.count())-1;i>=0;i--){const b=buttons.nth(i);if(await b.isVisible().catch(()=>false)){submitted=await b.click({noWaitAfter:true}).then(()=>true).catch(()=>false);if(submitted)break}}}if(!submitted&&await form.count())submitted=await form.evaluate(el=>{if(typeof el.requestSubmit!=="function")return false;el.requestSubmit();return true}).catch(()=>false);if(!submitted)throw Error("CustoJusto message form has no usable submit control");const confirmed=await page.waitForFunction(({value})=>{const fields=[...document.querySelectorAll('textarea,[contenteditable="true"],input[name*="message" i],textarea[name*="message" i]')];const cleared=fields.some(el=>((el.value??el.textContent??"").trim()===""));const shown=[...document.querySelectorAll('article,[data-message-id],.message,[class*="message"],[class*="bubble"]')].some(el=>(el.innerText||el.textContent||"").includes(value));return cleared||shown},{value:text},{timeout:8000}).then(()=>true).catch(()=>false);if(!confirmed)throw Error("CustoJusto did not confirm that the message was sent");return{ok:true,url:page.url()}}
+async function conversations(page,b){
+  await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+  await cookies(page);
+  await page.waitForTimeout(1000);
+  const rows=await page.locator('a[href]').evaluateAll((links,origin)=>links.map((n,i)=>{
+    const href=n.href||n.getAttribute("href")||"";
+    let pathname="";try{pathname=new URL(href,origin).pathname.toLowerCase()}catch{}
+    const text=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+    return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-id")||`conversation-${i}`,url:href,title:text,pathname};
+  }).filter(x=>x.url&&x.title&&x.pathname!=="/mensagens"&&x.pathname!=="/messages"&&/(mensagen|message|conversa|conversation|chat)/.test(x.pathname)),b);
+  const seen=new Set;
+  return rows.map(x=>({id:x.id,url:new URL(x.url,b).toString(),title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url)).slice(0,100);
+}
+function stableMessageId(row){return row.id||crypto.createHash("sha256").update(`${row.incoming?"in":"out"}|${row.timestamp}|${row.text}`).digest("hex").slice(0,24)}
+async function messages(page,url){
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+  await cookies(page);
+  await page.waitForTimeout(800);
+  const rows=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll(ns=>{
+    const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};
+    const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]')&&visible(c)));
+    return candidates.map(n=>{
+      const text=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+      const meta=`${n.className||""} ${n.getAttribute("data-direction")||""} ${n.getAttribute("data-testid")||""} ${n.getAttribute("aria-label")||""}`.toLowerCase();
+      const rect=n.getBoundingClientRect(),style=getComputedStyle(n);
+      let incoming=true;
+      if(/outgoing|sent|self|mine|own|justify-end|items-end|right/.test(meta)||style.alignSelf==="flex-end")incoming=false;
+      else if(/incoming|received|other|justify-start|items-start|left/.test(meta)||style.alignSelf==="flex-start")incoming=true;
+      else if(rect.width<innerWidth*.82)incoming=(rect.left+rect.width/2)<innerWidth/2;
+      return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender], [class*="sender" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};
+    }).filter(x=>x.text&&x.text.length<4000);
+  });
+  const seen=new Set;
+  return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true}).slice(-100);
+}
+async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=0;i<count;i++){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
+async function send(page,url,text){
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+  await cookies(page);
+  const fieldSelectors=['textarea','[contenteditable="true"]','input[name*="message" i]','textarea[name*="message" i]'];
+  let field=await visible(page,fieldSelectors);
+  if(!field){
+    const contact=await visible(page,['button:has-text("mensagem")','a:has-text("mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")']);
+    if(!contact)throw Error("CustoJusto contact button was not found on this listing");
+    await contact.click({noWaitAfter:true,timeout:15000});await page.waitForTimeout(700);
+    field=await visible(page,fieldSelectors);
+    if(!field){await page.waitForSelector(fieldSelectors.join(','),{state:"visible",timeout:20000});field=await visible(page,fieldSelectors)}
+  }
+  await field.fill(text,{timeout:15000});
+  const form=field.locator('xpath=ancestor::form[1]');
+  let submit=null;
+  if(await form.count())submit=await visible(form,['button[type="submit"]','button:has-text("Enviar")','button:has-text("Send")','input[type="submit"]']);
+  if(!submit)throw Error("CustoJusto send button was not found inside the message form");
+  const normalized=text.trim().replace(/\s+/g," ");
+  const encoded=encodeURIComponent(text).replace(/%20/g,'+');
+  const mutation=page.waitForResponse(r=>{
+    const method=r.request().method(),data=r.request().postData()||"";
+    if(!["POST","PUT","PATCH"].includes(method))return false;
+    let decoded=data;try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
+    return data.includes(text)||data.includes(encoded)||decoded.includes(text);
+  },{timeout:20000}).catch(()=>null);
+  await submit.click({noWaitAfter:true,timeout:15000});
+  let proof="";
+  for(let attempt=0;attempt<40&&!proof;attempt++){
+    await page.waitForTimeout(250);
+    const response=await Promise.race([mutation,Promise.resolve(null)]);
+    if(response&&response.status()>=400)throw Error(`CustoJusto rejected the message with HTTP ${response.status()}`);
+    if(response&&response.status()>=200&&response.status()<300)proof="network";
+    const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
+    if(successToast)proof="toast";
+    const currentValue=await field.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>text);
+    if(currentValue.trim()==="")proof="form-cleared";
+    const found=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll((nodes,expected)=>nodes.some(n=>{
+      const r=n.getBoundingClientRect(),s=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+      return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"&&actual===expected;
+    }),normalized).catch(()=>false);
+    if(found)proof="conversation";
+  }
+  if(!proof)throw Error("CustoJusto did not confirm delivery; message was not marked as sent");
+  return{ok:true,verified:true,proof,url:page.url()};
+}
+
 app.get("/health",(_,res)=>res.json({ok:true,activeProfiles:contexts.size}));
-app.get(["/mobile","/manual/open"],async(req,res)=>{try{const account=id(req.query.accountId||"1");res.cookie("cj_account",account,{httpOnly:true,sameSite:"lax",maxAge:3600000});res.type("html").send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход в CustoJusto</title><style>*{box-sizing:border-box}body{margin:0;background:#101827;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;padding:42px 22px}main{max-width:430px;margin:auto}h1{font-size:31px;margin:0 0 18px}p{font-size:19px;line-height:1.45;color:#cbd5e1}.card{margin-top:26px;background:white;color:#111827;border-radius:24px;padding:25px}.field{margin:17px 0}label{display:block;font-size:18px;font-weight:700;margin-bottom:10px}input{width:100%;font-size:16px;padding:17px;border:1px solid #aab2c0;border-radius:12px}button{width:100%;margin-top:7px;padding:17px;border:0;border-radius:12px;background:#f47a29;color:white;font-size:16px}.note{font-size:16px;color:#64748b;margin:18px 0 0}</style></head><body><main><h1>Вход в CustoJusto</h1><p>Вставь email и пароль CustoJusto здесь. На следующем экране откроется браузер — только для CAPTCHA или подтверждения.</p><form class="card" method="post" action="/mobile"><input type="hidden" name="accountId" value="${account}"><div class="field"><label>Email CustoJusto</label><input type="email" name="email" autocomplete="username" required></div><div class="field"><label>Пароль CustoJusto</label><input type="password" name="password" autocomplete="current-password" required></div><button type="submit">Открыть браузер</button><p class="note">Логин и пароль передаются только во временный браузерный профиль, не сохраняются Telegram-ботом.</p></form></main></body></html>`)}catch(e){res.status(400).type("text/plain").send(e.message)}});
-app.post("/mobile",async(req,res)=>{try{const account=id(req.body?.accountId||"1");const s=await session(account);const page=s.page;await page.goto(new URL("/login",base(req.query.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(page);const email=String(req.body?.email||""),password=String(req.body?.password||"");if(!email||!password)return res.status(400).type("text/plain").send("Email и пароль обязательны");const emailField=page.locator('input[type="email"],input[name="email"],input[autocomplete="username"]').first();const passwordField=page.locator('input[type="password"],input[name="password"],input[autocomplete="current-password"]').first();await emailField.waitFor({state:"visible"});await emailField.fill(email);await passwordField.fill(password);const submit=page.locator('button[type="submit"],input[type="submit"],button:has-text("Entrar"),button:has-text("Iniciar sessão")').first();if(await submit.isVisible().catch(()=>false))await submit.click({noWaitAfter:true}).catch(()=>{});await page.waitForTimeout(1200);res.redirect(303,"/vnc.html?autoconnect=true&resize=remote")}catch(e){res.status(500).type("text/plain").send(`Не удалось открыть браузер: ${e.message}`)}});
+app.post("/manual/prepare",auth,async(req,res)=>{try{const account=id(req.body?.accountId),email=String(req.body?.email||"").trim(),password=String(req.body?.password||"");if(!email||!password)return res.status(400).json({error:"email and password are required"});const s=await session(account);await s.page.goto(new URL("/login",base(req.body?.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const emailField=s.page.locator("#username");const passwordField=s.page.locator("#password");await emailField.waitFor({state:"visible"});await emailField.fill(email);await passwordField.waitFor({state:"visible"});await passwordField.fill(password);res.json({ok:true})}catch(e){res.status(500).json({error:e.message})}});
+app.get("/manual/open",async(req,res)=>{try{const s=await session(req.query.accountId);await s.page.goto(new URL("/login",base(req.query.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const mobile=String(req.query.mobile||"")==="1";res.redirect(302,mobile?"/vnc.html?autoconnect=true&resize=scale&show_dot=true":"/vnc.html?autoconnect=true&resize=remote")}catch(e){res.status(500).type("text/plain").send(`Unable to open browser: ${e.message}`)}});
 app.post("/status",auth,(req,res)=>use(req,res,async(p,b)=>{if(p.url()==="about:blank")await p.goto(b,{waitUntil:"domcontentloaded",timeout:TIMEOUT});res.json({ok:true,loggedIn:await logged(p),url:p.url()})}));
 app.post("/conversations",auth,(req,res)=>use(req,res,async(p,b)=>{if(!await logged(p))return res.status(401).json({error:"CustoJusto session is not logged in"});res.json(await conversations(p,b))}));
 app.post("/messages",auth,(req,res)=>use(req,res,async(p)=>{if(!await logged(p))return res.status(401).json({error:"CustoJusto session is not logged in"});const u=String(req.body?.conversationUrl||"");if(!u)return res.status(400).json({error:"conversationUrl is required"});res.json(await messages(p,u))}));

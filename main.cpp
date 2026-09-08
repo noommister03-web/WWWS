@@ -30,7 +30,7 @@ std::string browserLink(long long id) {
     if (value == nullptr || *value == '\0') return "";
     std::string root = value;
     while (!root.empty() && root.back() == '/') root.pop_back();
-    return root + "/mobile";
+    return root + "/browser-api/manual/open?accountId=" + std::to_string(id) + "&mobile=1";
 }
 
 std::string accountStatus(const CustoJustoAccount& account) {

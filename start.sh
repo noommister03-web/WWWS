@@ -3,7 +3,7 @@ set -eu
 : "${BROWSER_WORKER_SHARED_SECRET:?BROWSER_WORKER_SHARED_SECRET is required}"
 : "${REMOTE_BROWSER_PASSWORD:?REMOTE_BROWSER_PASSWORD is required}"
 PORT="${PORT:-8080}"
-echo "CustoJusto browser-session release 2026.09.07-r1"
+echo "CustoJusto browser-session release 2026.09.08-r7"
 PIDS=""
 stop(){ kill $PIDS 2>/dev/null || true; wait 2>/dev/null || true; }; trap stop INT TERM EXIT
 export DISPLAY=:99
@@ -18,30 +18,7 @@ websockify --web=/usr/share/novnc 127.0.0.1:6080 127.0.0.1:5900 >/tmp/websockify
 node /app/browser_worker.js >/tmp/browser-worker.log 2>&1 & PIDS="$PIDS $!"
 for n in $(seq 1 30); do node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' && break; sleep 1; done
 node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || { cat /tmp/browser-worker.log >&2; exit 1; }
-HASH="$(caddy hash-password --plaintext "$REMOTE_BROWSER_PASSWORD")"
-cat >/tmp/Caddyfile <<EOF2
-:${PORT} {
-  handle /health {
-    respond "ok" 200
-  }
-
-  handle_path /browser-api/* {
-    basicauth {
-      custo $HASH
-    }
-    reverse_proxy 127.0.0.1:3001
-  }
-
-  handle {
-    basicauth {
-      custo $HASH
-    }
-    reverse_proxy 127.0.0.1:6080
-  }
-}
-EOF2
-caddy validate --config /tmp/Caddyfile --adapter caddyfile
-caddy run --config /tmp/Caddyfile --adapter caddyfile >/tmp/caddy.log 2>&1 & PIDS="$PIDS $!"
+node /app/gateway.js >/tmp/gateway.log 2>&1 & PIDS="$PIDS $!"
 sleep 1
-node -e 'fetch("http://127.0.0.1:"+(process.env.PORT||"8080")+"/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || { cat /tmp/caddy.log >&2; exit 1; }
+node -e 'fetch("http://127.0.0.1:"+(process.env.PORT||"8080")+"/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || { cat /tmp/gateway.log >&2; exit 1; }
 exec /app/tg_bot
