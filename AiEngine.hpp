@@ -18,7 +18,8 @@ public:
     bool enabled() const;
 
     std::string generateReply(
-        const std::vector<MessageRecord>& history
+        const std::vector<MessageRecord>& history,
+        const std::string& systemPromptOverride = ""
     ) const;
 
 private:

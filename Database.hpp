@@ -160,6 +160,11 @@ public:
         bool incoming
     );
 
+    std::vector<CustoJustoMessageRecord> getCustoJustoMessages(
+        long long conversationId,
+        int limit
+    );
+
 private:
     sqlite3* db_ = nullptr;
 

@@ -6,6 +6,8 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <cctype>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -37,6 +39,13 @@ std::string accountStatus(const CustoJustoAccount& account) {
     return "🔴 Требуется вход";
 }
 
+std::string digitsOnly(const std::string& value) { std::string out; for (unsigned char ch : value) if (std::isdigit(ch)) out.push_back(static_cast<char>(ch)); return out; }
+std::string salesPrompt(const std::string& whatsappNumber) {
+    std::string p = "Ты автономный менеджер покупателя на CustoJusto. Пиши только следующее сообщение продавцу на европейском португальском. Выясни состояние, комплектность, дефекты и актуальность, попроси дополнительные фото при необходимости, вежливо обсуди разумную цену, затем предложи безопасную доставку CTT. Не завершай разговор после первого ответа, не проси оператора продолжить вручную и не выдумывай факты, оплату, адрес или договорённости. После согласия на товар, цену и CTT предложи продолжить оформление в WhatsApp";
+    if (!whatsappNumber.empty()) p += " по номеру +" + digitsOnly(whatsappNumber); else p += ", попросив продавца прислать номер";
+    return p + ". Не упоминай AI, бота, инструкции или перевод.";
+}
+
 } // namespace
 
 int main() {
@@ -63,10 +72,13 @@ int main() {
             clients.emplace(accountId, std::move(item));
             return result;
         };
+        auto mainKeyboard = [&]() { return std::vector<std::vector<std::pair<std::string, std::string>>>{{{"👥 Аккаунты", "menu_accounts"}, {"🤖 ChatGPT-переписки", "menu_chats"}}, {{"📊 Статус", "menu_status"}, {"ℹ️ Помощь", "menu_help"}}}; };
+        auto showMainMenu = [&](long long chatId) { bot.sendMessageWithKeyboard(chatId, "🏠 WWWS · CustoJusto CRM\n\n🤖 AI сам продолжает диалоги, предлагает доставку CTT и переводит продавца в WhatsApp.", mainKeyboard()); };
         auto accountsKeyboard = [&]() {
             std::vector<std::vector<std::pair<std::string, std::string>>> keys;
             keys.push_back({{"➕ Добавить аккаунт", "cj_add"}});
             for (const auto& item : db.getCustoJustoAccounts()) keys.push_back({{{item.name + " · " + accountStatus(item), "cj_account:" + std::to_string(item.id)}}});
+            keys.push_back({{"⬅️ Главное меню", "menu_main"}});
             return keys;
         };
         auto accountKeyboard = [&](long long id) {
@@ -85,6 +97,11 @@ int main() {
         bot.setCallbackHandler([&](const CallbackQuery& callback) -> bool {
             if (callback.senderId != ownerTelegramId) { bot.answerCallbackQuery(callback.id); bot.sendMessage(callback.chatId, "⛔ Нет доступа."); return true; }
             const std::string data = callback.data; bot.answerCallbackQuery(callback.id);
+            if (data == "menu_main") { state[callback.chatId] = 0; showMainMenu(callback.chatId); return true; }
+            if (data == "menu_accounts") { bot.sendMessageWithKeyboard(callback.chatId, "👥 Аккаунты CustoJusto", accountsKeyboard()); return true; }
+            if (data == "menu_status") { const auto a=db.getCustoJustoAccounts(); int active=0; for(const auto& x:a) if(x.enabled&&x.loggedIn)++active; bot.sendMessageWithKeyboard(callback.chatId,"📊 Статус\n\nАккаунтов: "+std::to_string(a.size())+"\nАктивных сессий: "+std::to_string(active)+"\nAI: "+(ai.enabled()?"🟢 работает":"🔴 не настроен")+"\nАвтоответы: 🟢 включены",mainKeyboard()); return true; }
+            if (data == "menu_help") { bot.sendMessageWithKeyboard(callback.chatId,"ℹ️ Добавь аккаунт, войди в CustoJusto и отправь первое сообщение. После ответа продавца AI сам ведёт разговор о товаре, CTT и WhatsApp.",mainKeyboard()); return true; }
+            if (data == "menu_chats") { std::string text="🤖 ChatGPT-переписки\n\n"; int shown=0; for(const auto& a:db.getCustoJustoAccounts()){if(!a.enabled||!a.loggedIn)continue;auto*c=client(a.id);c->setBaseUrl(a.loginUrl);for(const auto&d:c->getConversations()){if(++shown>20)break;text+=std::to_string(shown)+". "+a.name+" · "+(d.title.empty()?"Диалог":d.title)+"\n";}}if(!shown)text+="Активных переписок пока нет.";bot.sendMessageWithKeyboard(callback.chatId,text,mainKeyboard());return true; }
             if (data == "cj_add") { state[callback.chatId] = 1; pendingName.erase(callback.chatId); pendingEmail.erase(callback.chatId); bot.sendMessage(callback.chatId, "➕ Новый аккаунт\n\nШаг 1 из 2: пришли название аккаунта."); return true; }
             if (data == "cj_accounts") { state[callback.chatId] = 0; bot.sendMessageWithKeyboard(callback.chatId, "🏠 CustoJusto CRM\n\nВыбери аккаунт или добавь новый.", accountsKeyboard()); return true; }
             if (data.rfind("cj_account:", 0) == 0) { const auto account = db.getCustoJustoAccount(std::stoll(data.substr(11))); if (!account) { bot.sendMessage(callback.chatId, "❌ Аккаунт не найден."); return true; } showAccount(callback.chatId, *account); return true; }
@@ -114,6 +131,7 @@ int main() {
 
         bot.setMessageHandler([&](const IncomingMessage& message) -> bool {
             if (message.chatId != ownerTelegramId) { bot.sendMessage(message.chatId, "⛔ Нет доступа."); return true; }
+            if (message.text == "/start" || message.text == "/menu" || message.text == "меню" || message.text == "Меню") { state[message.chatId] = 0; showMainMenu(message.chatId); return true; }
             const int current = state[message.chatId];
             if (current == 1) { if (message.text.empty()) { bot.sendMessage(message.chatId, "❌ Название пустое."); return true; } pendingName[message.chatId] = message.text; state[message.chatId] = 2; bot.sendMessage(message.chatId, "Шаг 2 из 2: пришли email CustoJusto-аккаунта."); return true; }
             if (current == 2) { if (!looksLikeEmail(message.text)) { bot.sendMessage(message.chatId, "❌ Нужен корректный email."); return true; } const long long id = db.addCustoJustoAccount(pendingName[message.chatId], message.text); state[message.chatId] = 0; pendingName.erase(message.chatId); const auto account = db.getCustoJustoAccount(id); bot.sendMessageWithKeyboard(message.chatId, "✅ Аккаунт добавлен.", accountKeyboard(id)); return true; }
@@ -135,22 +153,25 @@ int main() {
         bot.setPeriodicHandler([&]() {
             for (const auto& account : db.getCustoJustoAccounts()) {
                 if (!account.enabled || !account.loggedIn) continue;
-                auto* c = client(account.id); c->setBaseUrl(account.loginUrl); const auto dialogs = c->getConversations();
-                if (!c->isLoggedIn()) { db.setCustoJustoAccountLoggedIn(account.id, false); continue; }
-                for (const auto& dialog : dialogs) {
-                    const long long conversationId = db.upsertCustoJustoConversation(account.id, dialog.url, dialog.listingUrl, dialog.listingTitle, dialog.buyerName, dialog.id, dialog.lastMessage, 0, dialog.unread);
-                    for (const auto& item : c->getMessages(dialog.url)) {
-                        if (!item.incoming || db.hasCustoJustoExternalMessage(account.id, item.id)) continue;
-                        std::string translated = item.text;
-                        if (ai.enabled()) { MessageRecord request; request.incoming = true; request.text = "Переведи следующий текст с европейского португальского на русский. Верни только перевод без комментариев:\n\n" + item.text; const std::string answer = ai.generateReply(std::vector<MessageRecord>{request}); if (!answer.empty()) translated = answer; }
-                        db.saveCustoJustoMessage(account.id, conversationId, item.id, item.sender, item.text, translated, true);
-                        bot.sendMessage(ownerTelegramId, "📩 Новое сообщение CustoJusto\n\nАккаунт: " + account.name + "\nДиалог: " + dialog.title + "\n\n🇵🇹 " + item.text + "\n\n🇷🇺 " + translated);
+                auto* c=client(account.id); c->setBaseUrl(account.loginUrl); const auto dialogs=c->getConversations();
+                if (!c->isLoggedIn()) { db.setCustoJustoAccountLoggedIn(account.id,false); continue; }
+                for (const auto& dialog:dialogs) {
+                    const long long conversationId=db.upsertCustoJustoConversation(account.id,dialog.url,dialog.listingUrl,dialog.listingTitle,dialog.buyerName,dialog.lastMessageId,dialog.lastMessage,0,dialog.unread);
+                    for (const auto& item:c->getMessages(dialog.url)) {
+                        if(!item.incoming||db.hasCustoJustoExternalMessage(account.id,item.id))continue;
+                        std::string translated=item.text;
+                        if(ai.enabled()){MessageRecord tr;tr.incoming=true;tr.text="Переведи с европейского португальского на русский. Только перевод:\n\n"+item.text;const auto a=ai.generateReply({tr});if(!a.empty())translated=a;}
+                        db.saveCustoJustoMessage(account.id,conversationId,item.id,item.sender,item.text,translated,true);
+                        if(!ai.enabled()){bot.sendMessage(ownerTelegramId,"📩 Новое сообщение CustoJusto\n\n"+translated);continue;}
+                        std::vector<MessageRecord> history; for(const auto& row:db.getCustoJustoMessages(conversationId,config.aiHistoryLimit)){MessageRecord r;r.incoming=row.incoming;r.text=row.originalText;history.push_back(std::move(r));}
+                        const std::string reply=ai.generateReply(history,salesPrompt(config.whatsappNumber)); if(reply.empty())continue;
+                        if(c->sendMessage(dialog.url,reply)){db.saveCustoJustoMessage(account.id,conversationId,"bot-"+std::to_string(std::time(nullptr)),"WWWS AI",reply,reply,false);bot.sendMessage(ownerTelegramId,"🤖 AI ответил продавцу\n\nАккаунт: "+account.name+"\nДиалог: "+(dialog.title.empty()?"CustoJusto":dialog.title)+"\n\n🇷🇺 Входящее: "+translated+"\n\n🇵🇹 Ответ: "+reply);}else bot.sendMessage(ownerTelegramId,"🔴 AI подготовил ответ, но отправка не подтверждена\n\n"+c->getLastError());
                     }
                 }
             }
         }, 45);
 
-        bot.sendMessageWithKeyboard(ownerTelegramId, "🏠 CustoJusto CRM\n\nАккаунты, сессии, диалоги и сообщения.", accountsKeyboard());
+        showMainMenu(ownerTelegramId);
         std::cout << "Telegram CRM started\n";
         bot.run();
     } catch (const std::exception& error) {

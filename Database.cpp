@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <filesystem>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -1101,4 +1102,42 @@ long long Database::saveCustoJustoMessage(
 
     sqlite3_finalize(statement);
     return sqlite3_last_insert_rowid(db_);
+}
+
+
+std::vector<CustoJustoMessageRecord> Database::getCustoJustoMessages(
+    long long conversationId,
+    int limit
+) {
+    std::vector<CustoJustoMessageRecord> rows;
+    sqlite3_stmt* statement = nullptr;
+    const char* sql = R"SQL(
+        SELECT id, account_id, conversation_id, external_message_id,
+               sender_name, original_text, translated_text, incoming, created_at
+        FROM custojusto_messages
+        WHERE conversation_id = ?
+        ORDER BY id DESC
+        LIMIT ?;
+    )SQL";
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr);
+    checkSqlite(rc, db_, "prepare CustoJusto message history");
+    sqlite3_bind_int64(statement, 1, conversationId);
+    sqlite3_bind_int(statement, 2, std::max(1, std::min(limit, 100)));
+    while ((rc = sqlite3_step(statement)) == SQLITE_ROW) {
+        CustoJustoMessageRecord row;
+        row.id = sqlite3_column_int64(statement, 0);
+        row.accountId = sqlite3_column_int64(statement, 1);
+        row.conversationId = sqlite3_column_int64(statement, 2);
+        row.externalMessageId = columnText(statement, 3);
+        row.senderName = columnText(statement, 4);
+        row.originalText = columnText(statement, 5);
+        row.translatedText = columnText(statement, 6);
+        row.incoming = sqlite3_column_int(statement, 7) != 0;
+        row.createdAt = sqlite3_column_int64(statement, 8);
+        rows.push_back(std::move(row));
+    }
+    if (rc != SQLITE_DONE) checkSqlite(rc, db_, "read CustoJusto message history");
+    sqlite3_finalize(statement);
+    std::reverse(rows.begin(), rows.end());
+    return rows;
 }

@@ -99,7 +99,8 @@ std::string AiEngine::limitUtf8(
 }
 
 std::string AiEngine::generateReply(
-    const std::vector<MessageRecord>& history
+    const std::vector<MessageRecord>& history,
+    const std::string& systemPromptOverride
 ) const {
     if (!enabled()) {
         return "";
@@ -109,7 +110,7 @@ std::string AiEngine::generateReply(
 
     messages.push_back({
         {"role", "system"},
-        {"content", systemPrompt_}
+        {"content", systemPromptOverride.empty() ? systemPrompt_ : systemPromptOverride}
     });
 
     const std::size_t maxHistory =
