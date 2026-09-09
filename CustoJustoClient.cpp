@@ -582,10 +582,12 @@ bool CustoJustoClient::request(
     // Chromium's first launch on a small Railway instance can take more than
     // one minute, especially immediately after deployment. Keep the bot's
     // request alive long enough for the browser worker to complete login.
+    // A 423 recovery can wait 15 + 30 + 60 + 120 seconds. Keep the
+    // client alive for the full safe backoff plus browser navigation.
     curl_easy_setopt(
         curl,
         CURLOPT_TIMEOUT,
-        180L
+        360L
     );
 
     curl_easy_setopt(
