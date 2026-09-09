@@ -70,6 +70,18 @@ struct CustoJustoMessageRecord {
     long long createdAt = 0;
 };
 
+struct CustoJustoDraftRecord {
+    long long id = 0;
+    long long accountId = 0;
+    long long conversationId = 0;
+    std::string targetUrl;
+    std::string text;
+    std::string incomingText;
+    std::string translatedIncoming;
+    std::string status = "pending";
+    long long createdAt = 0;
+};
+
 class Database {
 public:
     explicit Database(const std::string& path);
@@ -164,6 +176,14 @@ public:
         long long conversationId,
         int limit
     );
+
+    std::vector<CustoJustoConversationRecord> getCustoJustoConversations(long long accountId, int limit = 100);
+
+    long long createCustoJustoDraft(long long accountId, long long conversationId, const std::string& targetUrl, const std::string& text, const std::string& incomingText = "", const std::string& translatedIncoming = "");
+    std::optional<CustoJustoDraftRecord> getCustoJustoDraft(long long id);
+    bool updateCustoJustoDraftText(long long id, const std::string& text);
+    bool setCustoJustoDraftStatus(long long id, const std::string& status);
+    bool claimCustoJustoDraftForSending(long long id);
 
 private:
     sqlite3* db_ = nullptr;
