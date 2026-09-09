@@ -3,7 +3,7 @@ set -eu
 : "${BROWSER_WORKER_SHARED_SECRET:?BROWSER_WORKER_SHARED_SECRET is required}"
 : "${REMOTE_BROWSER_PASSWORD:?REMOTE_BROWSER_PASSWORD is required}"
 PORT="${PORT:-8080}"
-echo "CustoJusto browser-session release 2026.09.08-r7"
+echo "WWWS release 2026.09.09-r1 (Telegram UI + CustoJusto worker)"
 PIDS=""
 stop(){ kill $PIDS 2>/dev/null || true; wait 2>/dev/null || true; }; trap stop INT TERM EXIT
 export DISPLAY=:99
