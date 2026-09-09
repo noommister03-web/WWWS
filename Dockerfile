@@ -20,6 +20,7 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 FROM node:22-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
+ENV WWWS_RELEASE=2026.09.09-r1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4 libsqlite3-0 libstdc++6 ca-certificates \
