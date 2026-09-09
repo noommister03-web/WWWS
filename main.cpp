@@ -17,6 +17,8 @@
 
 namespace {
 
+constexpr const char* WWWS_RELEASE = "2026.09.09-r1";
+
 bool looksLikeEmail(const std::string& value) {
     const auto at = value.find('@');
     const auto dot = value.rfind('.');
@@ -112,7 +114,7 @@ int main() {
         auto showMainMenu = [&](long long chatId) {
             bot.sendMessageWithKeyboard(
                 chatId,
-                "🏠 WWWS · CustoJusto CRM\n\n🤖 AI сам продолжает диалоги, предлагает доставку CTT и переводит продавца в WhatsApp.",
+                "🏠 WWWS · CustoJusto CRM · " + std::string(WWWS_RELEASE) + "\n\n🤖 AI сам продолжает диалоги, предлагает доставку CTT и переводит продавца в WhatsApp.",
                 mainKeyboard()
             );
         };
@@ -182,7 +184,7 @@ int main() {
                     "📊 Статус\n\nАккаунтов: " + std::to_string(a.size()) +
                     "\nАктивных сессий: " + std::to_string(active) +
                     "\nAI: " + (ai.enabled() ? "🟢 работает" : "🔴 не настроен") +
-                    "\nАвтоответы: 🟢 включены",
+                    "\nАвтоответы: 🟢 включены\nСборка: " + std::string(WWWS_RELEASE),
                     mainKeyboard()
                 );
                 return true;
