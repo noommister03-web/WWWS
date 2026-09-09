@@ -123,14 +123,44 @@ async function send(page,url,text){
     if(!submit)throw Error("CustoJusto send button disappeared before click");
     await submit.click({timeout:5000,force:true});
   }
-  const response=await deliveryResponse;
-  if(response&&response.status()>=400){
+  let response=await deliveryResponse;
+  let proof=response&&response.status()>=200&&response.status()<300?"network":"";
+  if(response&&response.status()===423){
+    const detail=(await response.text().catch(()=>"")).slice(0,500);
+    await page.waitForTimeout(10000);
+    await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+    await cookies(page);
+    await page.waitForTimeout(1000);
+    await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
+    await cookies(page);
+    await page.waitForTimeout(1000);
+    if(await appearsInConversation())proof="conversation-after-423";
+    if(!proof){
+      field=await visible(page,fieldSelectors);
+      if(!field){const e=Error(`CustoJusto chat is locked (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
+      await field.fill(text,{timeout:10000});
+      const retryComposer=field.locator('xpath=ancestor::*[self::form or @role="dialog" or contains(@class,"message") or contains(@class,"contact")][1]');
+      let retrySubmit=null;
+      if(await retryComposer.count())retrySubmit=await visible(retryComposer,submitSelectors);
+      if(!retrySubmit)retrySubmit=await visible(page,submitSelectors);
+      if(!retrySubmit){const e=Error("CustoJusto chat stayed locked after a clean reopen");e.status=423;throw e;}
+      const retryResponsePromise=page.waitForResponse(r=>["POST","PUT","PATCH"].includes(r.request().method()),{timeout:20000}).catch(()=>null);
+      try{await nativeClick(retrySubmit)}catch{
+        retrySubmit=await visible(page,submitSelectors);
+        if(!retrySubmit){const e=Error("CustoJusto send button disappeared during 423 retry");e.status=423;throw e;}
+        await retrySubmit.click({timeout:5000,force:true});
+      }
+      response=await retryResponsePromise;
+      if(response&&response.status()===423){const retryDetail=(await response.text().catch(()=>"")).slice(0,500);const e=Error(`CustoJusto itself locked this chat (HTTP 423)${retryDetail?`: ${retryDetail}`:""}`);e.status=423;throw e;}
+      if(response&&response.status()>=400){const retryDetail=(await response.text().catch(()=>"")).slice(0,500);const e=Error(`CustoJusto rejected retry with HTTP ${response.status()}${retryDetail?`: ${retryDetail}`:""}`);e.status=response.status();throw e;}
+      if(response&&response.status()>=200&&response.status()<300)proof="network-retry";
+    }
+  }else if(response&&response.status()>=400){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
     const e=Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
     e.status=response.status();
     throw e;
   }
-  let proof=response&&response.status()>=200&&response.status()<300?"network":"";
   for(let attempt=0;attempt<40&&!proof;attempt++){
     await page.waitForTimeout(250);
     const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
