@@ -51,13 +51,14 @@ async function messages(page,url){
   const seen=new Set;
   return rows.map(x=>({...x,id:stableMessageId(x),conversationId:url})).filter(x=>{const k=`${x.incoming}|${x.timestamp}|${x.text}`;if(seen.has(k))return false;seen.add(k);return true}).slice(-100);
 }
-async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=0;i<count;i++){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
+async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=count-1;i>=0;i--){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
+async function waitVisible(page,selectors,timeout=20000){const end=Date.now()+timeout;do{const found=await visible(page,selectors);if(found)return found;await page.waitForTimeout(250)}while(Date.now()<end);return null}
 async function send(page,url,text){
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);
   await page.waitForTimeout(1500);
-  const fieldSelectors=['textarea[name*="message" i]','textarea[placeholder*="mensagem" i]','[contenteditable="true"][role="textbox"]','textarea','[role="textbox"]'];
-  const contactSelectors=['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]'];
+  const fieldSelectors=['textarea[name*="message" i]','textarea[placeholder*="mensagem" i]','textarea[placeholder*="message" i]','input[name*="message" i]','input[placeholder*="mensagem" i]','input[placeholder*="message" i]','[contenteditable="true"][role="textbox"]','textarea','[role="textbox"]','input[type="text"]'];
+  const contactSelectors=['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]','[data-testid*="message" i]','a[href*="mensag" i]','a[href*="chat" i]'];
   const submitSelectors=['button[type="submit"]:not([disabled])','button:has-text("Enviar"):not([disabled])','button[aria-label*="enviar" i]:not([disabled])','button[title*="enviar" i]:not([disabled])','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]:not([disabled])'];
   const normalized=text.trim().replace(/\s+/g," ");
   const messageSelector='article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]';
@@ -80,10 +81,13 @@ async function send(page,url,text){
       if(!contact)throw Error("CustoJusto contact button disappeared before click");
       await contact.click({timeout:5000,force:true});
     }
-    await page.waitForTimeout(1500);
-    field=await visible(page,fieldSelectors);
+    await page.waitForTimeout(1000);
+    field=await waitVisible(page,fieldSelectors,20000);
   }
-  if(!field)throw Error("CustoJusto message field was not found");
+  if(!field){
+    const state={url:page.url(),title:await page.title().catch(()=>""),inputs:await page.locator('textarea,input,[contenteditable="true"],[role="textbox"]').count().catch(()=>0)};
+    throw Error(`CustoJusto message field was not found (${JSON.stringify(state)})`);
+  }
   try{
     await field.evaluate((el,value)=>{
       el.focus({preventScroll:true});
