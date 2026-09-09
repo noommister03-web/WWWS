@@ -57,24 +57,55 @@ async function send(page,url,text){
   await cookies(page);
   await page.waitForTimeout(1500);
   const fieldSelectors=['textarea[name*="message" i]','textarea[placeholder*="mensagem" i]','[contenteditable="true"][role="textbox"]','textarea','[role="textbox"]'];
+  const contactSelectors=['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]'];
+  const submitSelectors=['button[type="submit"]:not([disabled])','button:has-text("Enviar"):not([disabled])','button[aria-label*="enviar" i]:not([disabled])','button[title*="enviar" i]:not([disabled])','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]:not([disabled])'];
+  const normalized=text.trim().replace(/\s+/g," ");
+  const messageSelector='article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]';
+  const appearsInConversation=()=>page.locator(messageSelector).evaluateAll((nodes,expected)=>nodes.some(n=>{
+    const r=n.getBoundingClientRect(),style=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
+    return r.width>20&&r.height>10&&style.display!=="none"&&style.visibility!=="hidden"&&actual.includes(expected);
+  }),normalized).catch(()=>false);
+  const nativeClick=async locator=>{
+    await locator.evaluate(el=>{
+      el.focus({preventScroll:true});
+      el.click();
+    });
+  };
   let field=await visible(page,fieldSelectors);
   if(!field){
-    const contact=await visible(page,['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]']);
+    let contact=await visible(page,contactSelectors);
     if(!contact)throw Error("CustoJusto contact button was not found on this listing");
-    await contact.scrollIntoViewIfNeeded();
-    await contact.click({timeout:15000});
+    try{await nativeClick(contact)}catch{
+      contact=await visible(page,contactSelectors);
+      if(!contact)throw Error("CustoJusto contact button disappeared before click");
+      await contact.click({timeout:5000,force:true});
+    }
     await page.waitForTimeout(1500);
     field=await visible(page,fieldSelectors);
   }
   if(!field)throw Error("CustoJusto message field was not found");
-  await field.scrollIntoViewIfNeeded();
-  await field.click({timeout:15000});
-  await field.press(process.platform==="darwin"?"Meta+A":"Control+A").catch(()=>{});
-  await field.press("Backspace").catch(()=>{});
-  await field.type(text,{delay:35,timeout:TIMEOUT});
-  await page.waitForTimeout(1200);
+  try{
+    await field.evaluate((el,value)=>{
+      el.focus({preventScroll:true});
+      if(el.isContentEditable){
+        el.textContent=value;
+        el.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:value}));
+      }else{
+        const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),"value")?.set;
+        if(setter)setter.call(el,value);else el.value=value;
+        el.dispatchEvent(new Event("input",{bubbles:true}));
+        el.dispatchEvent(new Event("change",{bubbles:true}));
+      }
+    },text);
+  }catch{
+    field=await visible(page,fieldSelectors);
+    if(!field)throw Error("CustoJusto message field disappeared before typing");
+    await field.fill(text,{timeout:10000});
+  }
+  await page.waitForTimeout(800);
+  field=await visible(page,fieldSelectors);
+  if(!field)throw Error("CustoJusto message field disappeared before send");
   const composer=field.locator('xpath=ancestor::*[self::form or @role="dialog" or contains(@class,"message") or contains(@class,"contact")][1]');
-  const submitSelectors=['button[type="submit"]:not([disabled])','button:has-text("Enviar"):not([disabled])','button[aria-label*="enviar" i]:not([disabled])','button[title*="enviar" i]:not([disabled])','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]:not([disabled])'];
   let submit=null;
   if(await composer.count())submit=await visible(composer,submitSelectors);
   if(!submit)submit=await visible(page,submitSelectors);
@@ -87,8 +118,11 @@ async function send(page,url,text){
     try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
     return data.includes(text)||decoded.includes(text)||decoded.includes(text.trim());
   },{timeout:20000}).catch(()=>null);
-  await submit.scrollIntoViewIfNeeded();
-  await submit.click({timeout:15000});
+  try{await nativeClick(submit)}catch{
+    submit=await visible(page,submitSelectors);
+    if(!submit)throw Error("CustoJusto send button disappeared before click");
+    await submit.click({timeout:5000,force:true});
+  }
   const response=await deliveryResponse;
   if(response&&response.status()>=400){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
@@ -96,19 +130,20 @@ async function send(page,url,text){
     e.status=response.status();
     throw e;
   }
-  const normalized=text.trim().replace(/\s+/g," ");
   let proof=response&&response.status()>=200&&response.status()<300?"network":"";
   for(let attempt=0;attempt<40&&!proof;attempt++){
     await page.waitForTimeout(250);
     const successToast=await page.getByText(/mensagem enviada|message sent|enviado com sucesso/i).first().isVisible().catch(()=>false);
     if(successToast)proof="toast";
-    const currentValue=await field.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>text);
+    const freshField=await visible(page,fieldSelectors);
+    const currentValue=freshField?await freshField.evaluate(el=>el.isContentEditable?(el.textContent||""):String(el.value||"")).catch(()=>text):text;
     if(currentValue.trim()==="")proof="form-cleared";
-    const found=await page.locator('article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]').evaluateAll((nodes,expected)=>nodes.some(n=>{
-      const r=n.getBoundingClientRect(),style=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
-      return r.width>20&&r.height>10&&style.display!=="none"&&style.visibility!=="hidden"&&actual.includes(expected);
-    }),normalized).catch(()=>false);
-    if(found)proof="conversation";
+    if(await appearsInConversation())proof="conversation";
+  }
+  if(!proof){
+    await page.reload({waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
+    await page.waitForTimeout(1000);
+    if(await appearsInConversation())proof="conversation-after-reload";
   }
   return{ok:true,verified:Boolean(proof),proof:proof||"submitted-unverified",url:page.url()};
 }
