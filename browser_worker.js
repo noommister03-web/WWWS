@@ -72,18 +72,24 @@ async function send(page,url,text){
       el.click();
     });
   };
-  let field=await visible(page,fieldSelectors);
-  if(!field){
-    let contact=await visible(page,contactSelectors);
-    if(!contact)throw Error("CustoJusto contact button was not found on this listing");
-    try{await nativeClick(contact)}catch{
-      contact=await visible(page,contactSelectors);
-      if(!contact)throw Error("CustoJusto contact button disappeared before click");
-      await contact.click({timeout:5000,force:true});
+  const openComposer=async()=>{
+    for(let attempt=0;attempt<4;attempt++){
+      let field=await waitVisible(page,fieldSelectors,attempt===0?5000:4000);
+      if(field)return field;
+      const contact=await visible(page,contactSelectors);
+      if(contact){
+        try{await nativeClick(contact)}catch{
+          const freshContact=await visible(page,contactSelectors);
+          if(freshContact)await freshContact.click({timeout:5000,force:true});
+        }
+        field=await waitVisible(page,fieldSelectors,8000);
+        if(field)return field;
+      }
+      await page.waitForTimeout(1000);
     }
-    await page.waitForTimeout(1000);
-    field=await waitVisible(page,fieldSelectors,20000);
-  }
+    return null;
+  };
+  let field=await openComposer();
   if(!field){
     const state={url:page.url(),title:await page.title().catch(()=>""),inputs:await page.locator('textarea,input,[contenteditable="true"],[role="textbox"]').count().catch(()=>0)};
     throw Error(`CustoJusto message field was not found (${JSON.stringify(state)})`);
@@ -131,34 +137,48 @@ async function send(page,url,text){
   let proof=response&&response.status()>=200&&response.status()<300?"network":"";
   if(response&&response.status()===423){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
-    await page.waitForTimeout(10000);
-    await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
-    await cookies(page);
-    await page.waitForTimeout(1000);
-    await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
-    await cookies(page);
-    await page.waitForTimeout(1000);
-    if(await appearsInConversation())proof="conversation-after-423";
-    if(!proof){
-      field=await visible(page,fieldSelectors);
-      if(!field){const e=Error(`CustoJusto chat is locked (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
-      await field.fill(text,{timeout:10000});
+    for(let retry=0;retry<3&&!proof;retry++){
+      await page.waitForTimeout(8000*(retry+1));
+      await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
+      await cookies(page);
+      await page.waitForTimeout(1000);
+      await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
+      await cookies(page);
+      await page.waitForTimeout(1000);
+      if(await appearsInConversation()){proof="conversation-after-423";break;}
+      field=await openComposer();
+      if(!field)continue;
+      await field.fill(text,{timeout:10000}).catch(async()=>{
+        const fresh=await openComposer();
+        if(!fresh)throw Error("CustoJusto composer disappeared during 423 retry");
+        field=fresh;
+        await field.fill(text,{timeout:10000});
+      });
       const retryComposer=field.locator('xpath=ancestor::*[self::form or @role="dialog" or contains(@class,"message") or contains(@class,"contact")][1]');
       let retrySubmit=null;
       if(await retryComposer.count())retrySubmit=await visible(retryComposer,submitSelectors);
       if(!retrySubmit)retrySubmit=await visible(page,submitSelectors);
-      if(!retrySubmit){const e=Error("CustoJusto chat stayed locked after a clean reopen");e.status=423;throw e;}
-      const retryResponsePromise=page.waitForResponse(r=>["POST","PUT","PATCH"].includes(r.request().method()),{timeout:20000}).catch(()=>null);
+      if(!retrySubmit)continue;
+      const retryResponsePromise=page.waitForResponse(r=>{
+        if(!["POST","PUT","PATCH"].includes(r.request().method()))return false;
+        const data=r.request().postData()||"";
+        let decoded=data;try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
+        return data.includes(text)||decoded.includes(text)||decoded.includes(text.trim());
+      },{timeout:20000}).catch(()=>null);
       try{await nativeClick(retrySubmit)}catch{
-        retrySubmit=await visible(page,submitSelectors);
-        if(!retrySubmit){const e=Error("CustoJusto send button disappeared during 423 retry");e.status=423;throw e;}
-        await retrySubmit.click({timeout:5000,force:true});
+        const freshSubmit=await visible(page,submitSelectors);
+        if(!freshSubmit)continue;
+        await freshSubmit.click({timeout:5000,force:true});
       }
       response=await retryResponsePromise;
-      if(response&&response.status()===423){const retryDetail=(await response.text().catch(()=>"")).slice(0,500);const e=Error(`CustoJusto itself locked this chat (HTTP 423)${retryDetail?`: ${retryDetail}`:""}`);e.status=423;throw e;}
-      if(response&&response.status()>=400){const retryDetail=(await response.text().catch(()=>"")).slice(0,500);const e=Error(`CustoJusto rejected retry with HTTP ${response.status()}${retryDetail?`: ${retryDetail}`:""}`);e.status=response.status();throw e;}
-      if(response&&response.status()>=200&&response.status()<300)proof="network-retry";
+      if(response&&response.status()>=200&&response.status()<300){proof="network-retry";break;}
+      if(response&&response.status()===423)continue;
+      if(response&&response.status()>=400){
+        const retryDetail=(await response.text().catch(()=>"")).slice(0,500);
+        const e=Error(`CustoJusto rejected retry with HTTP ${response.status()}${retryDetail?`: ${retryDetail}`:""}`);e.status=response.status();throw e;
+      }
     }
+    if(!proof){const e=Error(`CustoJusto chat is temporarily locked (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
   }else if(response&&response.status()>=400){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
     const e=Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
@@ -179,13 +199,13 @@ async function send(page,url,text){
     await page.waitForTimeout(1000);
     if(await appearsInConversation())proof="conversation-after-reload";
   }
-  return{ok:true,verified:Boolean(proof),proof:proof||"submitted-unverified",url:page.url()};
+  return{ok:Boolean(proof),verified:Boolean(proof),proof:proof||"unverified",url:page.url()};
 }
 
 app.get("/health",(_,res)=>res.json({ok:true,activeProfiles:contexts.size}));
 app.post("/manual/prepare",auth,async(req,res)=>{try{const account=id(req.body?.accountId),email=String(req.body?.email||"").trim(),password=String(req.body?.password||"");if(!email||!password)return res.status(400).json({error:"email and password are required"});const s=await session(account);await s.page.goto(new URL("/login",base(req.body?.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const emailField=s.page.locator("#username");const passwordField=s.page.locator("#password");await emailField.waitFor({state:"visible"});await emailField.fill(email);await passwordField.waitFor({state:"visible"});await passwordField.fill(password);res.json({ok:true})}catch(e){res.status(500).json({error:e.message})}});
 app.get("/manual/open",async(req,res)=>{try{const s=await session(req.query.accountId);await s.page.goto(new URL("/login",base(req.query.baseUrl)).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(s.page);const mobile=String(req.query.mobile||"")==="1";res.redirect(302,mobile?"/vnc.html?autoconnect=true&resize=scale&show_dot=true":"/vnc.html?autoconnect=true&resize=remote")}catch(e){res.status(500).type("text/plain").send(`Unable to open browser: ${e.message}`)}});
-app.post("/status",auth,(req,res)=>use(req,res,async(p,b)=>{if(p.url()==="about:blank")await p.goto(b,{waitUntil:"domcontentloaded",timeout:TIMEOUT});res.json({ok:true,loggedIn:await logged(p),url:p.url()})}));
+app.post("/status",auth,(req,res)=>use(req,res,async(p,b)=>{if(p.url()==="about:blank")await p.goto(b,{waitUntil:"domcontentloaded",timeout:TIMEOUT});res.json({ok:true,loggedIn:await logged(p),url:p.url()}));
 app.post("/conversations",auth,(req,res)=>use(req,res,async(p,b)=>{if(!await logged(p))return res.status(401).json({error:"CustoJusto session is not logged in"});res.json(await conversations(p,b))}));
 app.post("/messages",auth,(req,res)=>use(req,res,async(p)=>{if(!await logged(p))return res.status(401).json({error:"CustoJusto session is not logged in"});const u=String(req.body?.conversationUrl||"");if(!u)return res.status(400).json({error:"conversationUrl is required"});res.json(await messages(p,u))}));
 app.post("/send",auth,(req,res)=>use(req,res,async(p)=>{if(!await logged(p))return res.status(401).json({error:"CustoJusto session is not logged in"});const u=String(req.body?.conversationUrl||req.body?.listingUrl||""),t=String(req.body?.text||req.body?.message||"");if(!u||!t)return res.status(400).json({error:"conversationUrl and text are required"});res.json(await send(p,u,t))}));
