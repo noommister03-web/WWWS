@@ -137,14 +137,18 @@ async function send(page,url,text){
   let proof=response&&response.status()>=200&&response.status()<300?"network":"";
   if(response&&response.status()===423){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
-    for(let retry=0;retry<3&&!proof;retry++){
-      await page.waitForTimeout(8000*(retry+1));
+    // CustoJusto uses 423 as a temporary conversation lock. Back off instead
+    // of hammering the same chat; the progressively longer waits also avoid
+    // turning a transient lock into an anti-spam lock.
+    const lockBackoff=[15000,30000,60000,120000];
+    for(let retry=0;retry<lockBackoff.length&&!proof;retry++){
+      await page.waitForTimeout(lockBackoff[retry]);
       await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
       await cookies(page);
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
       await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
       await cookies(page);
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
       if(await appearsInConversation()){proof="conversation-after-423";break;}
       field=await openComposer();
       if(!field)continue;
@@ -178,7 +182,7 @@ async function send(page,url,text){
         const e=Error(`CustoJusto rejected retry with HTTP ${response.status()}${retryDetail?`: ${retryDetail}`:""}`);e.status=response.status();throw e;
       }
     }
-    if(!proof){const e=Error(`CustoJusto chat is temporarily locked (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
+    if(!proof){const e=Error(`CustoJusto chat remains temporarily locked after safe backoff (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
   }else if(response&&response.status()>=400){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
     const e=Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
