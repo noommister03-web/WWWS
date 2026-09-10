@@ -18,66 +18,35 @@ async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))retur
 async function use(req,res,fn){try{const s=await session(req.body?.accountId);await exclusive(s,()=>fn(s.page,base(req.body?.baseUrl)))}catch(e){if(!res.headersSent)res.status(Number(e.status)||500).json({error:e.message,status:Number(e.status)||500})}}
 async function conversations(page,b){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
-  await cookies(page);
-  await page.waitForTimeout(1500);
-  let previousConversationCount=-1,stableConversationPasses=0;
-  for(let pass=0;pass<120&&stableConversationPasses<8;pass++){
-    const count=await page.locator('a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]').count();
-    stableConversationPasses=count===previousConversationCount?stableConversationPasses+1:0;
-    previousConversationCount=count;
-    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
-    await page.waitForTimeout(500);
+  await cookies(page);await page.waitForTimeout(1500);
+  const selector='a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]';
+  const found=new Map();let unchanged=0;
+  await page.evaluate(()=>{const xs=[...document.querySelectorAll('*')].filter(e=>{const s=getComputedStyle(e);return e.scrollHeight>e.clientHeight+50&&/(auto|scroll)/.test(s.overflowY)}).sort((a,b)=>b.clientHeight-a.clientHeight);const sc=xs[0]||document.scrollingElement;sc.scrollTop=0;window.scrollTo(0,0)});
+  for(let pass=0;pass<400&&unchanged<12;pass++){
+    const rows=await page.locator(selector).evaluateAll((nodes,origin)=>nodes.map((n,i)=>{
+      const anchor=n.matches('a[href]')?n:n.closest('a[href]');const raw=anchor?.getAttribute("href")||n.getAttribute("data-url")||n.getAttribute("data-href")||"";let u;try{u=new URL(raw,origin)}catch{return null}
+      const text=(n.innerText||n.textContent||anchor?.innerText||"").trim().replace(/\s+/g," ");const marker=`${n.getAttribute("data-conversation-id")||""} ${n.getAttribute("data-chat-id")||""} ${n.getAttribute("data-testid")||""} ${n.className||""}`.toLowerCase();const route=`${u.pathname}${u.search}${u.hash}`.toLowerCase();const root=/^\/(mensagens|messages)\/?$/.test(u.pathname.toLowerCase())&&!u.search&&!u.hash;if(root||!(/(mensagen|message|conversa|conversation|chat)/.test(route)||/(conversation|chat|thread|message)/.test(marker)))return null;
+      return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог",index:i};
+    }).filter(Boolean),b);
+    const before=found.size;for(const row of rows)found.set(row.url,{...row,pass});unchanged=found.size===before?unchanged+1:0;
+    const moved=await page.evaluate(()=>{const xs=[...document.querySelectorAll('*')].filter(e=>{const s=getComputedStyle(e);return e.scrollHeight>e.clientHeight+50&&/(auto|scroll)/.test(s.overflowY)}).sort((a,b)=>b.clientHeight-a.clientHeight);const sc=xs[0]||document.scrollingElement,before=sc.scrollTop,max=sc.scrollHeight-sc.clientHeight;sc.scrollTop=Math.min(max,before+Math.max(300,sc.clientHeight*.8));window.scrollTo(0,document.body.scrollHeight);return{before,after:sc.scrollTop,max}});
+    await page.waitForTimeout(500);if(moved.after>=moved.max-2&&unchanged>=6)break;
   }
-  const rows=await page.locator('a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]').evaluateAll((nodes,origin)=>nodes.map((n,i)=>{
-    const anchor=n.matches('a[href]')?n:n.closest('a[href]');
-    const raw=anchor?.getAttribute("href")||n.getAttribute("data-url")||n.getAttribute("data-href")||"";
-    let u;try{u=new URL(raw,origin)}catch{return null}
-    const text=(n.innerText||n.textContent||anchor?.innerText||"").trim().replace(/\s+/g," ");
-    const marker=`${n.getAttribute("data-conversation-id")||""} ${n.getAttribute("data-chat-id")||""} ${n.getAttribute("data-testid")||""} ${n.className||""}`.toLowerCase();
-    const route=`${u.pathname}${u.search}${u.hash}`.toLowerCase();
-    const isInboxRoot=/^\/(mensagens|messages)\/?$/.test(u.pathname.toLowerCase())&&!u.search&&!u.hash;
-    const looksLikeThread=!isInboxRoot&&(/(mensagen|message|conversa|conversation|chat)/.test(route)||/(conversation|chat|thread|message)/.test(marker));
-    if(!looksLikeThread)return null;
-    return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог"};
-  }).filter(Boolean),b);
-  const seen=new Set;
-  return rows.map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false})).filter(x=>!seen.has(x.url)&&seen.add(x.url));
+  return [...found.values()].sort((a,b)=>a.pass-b.pass||a.index-b.index).map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false}));
 }
 async function messages(page,url){
-  await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});
-  await cookies(page);
-  await page.waitForTimeout(1500);
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(page);await page.waitForTimeout(1500);
   const selector='article,[data-message-id],[data-testid*="message" i],[data-testid*="bubble" i],[class*="chat-message" i],[class*="message-bubble" i],[class*="messageItem" i],[class*="message-item" i],[class*="bubble" i]';
-  let previousMessageCount=-1,stableMessagePasses=0;
-  for(let pass=0;pass<240&&stableMessagePasses<10;pass++){
-    const count=await page.locator(selector).count();
-    stableMessagePasses=count===previousMessageCount?stableMessagePasses+1:0;
-    previousMessageCount=count;
-    await page.evaluate(()=>{const candidates=[...document.querySelectorAll('*')].filter(e=>{const s=getComputedStyle(e);return e.scrollHeight>e.clientHeight+50&&/(auto|scroll)/.test(s.overflowY)}).sort((a,b)=>b.clientHeight-a.clientHeight);(candidates[0]||document.scrollingElement).scrollTop=0;window.scrollTo(0,0)});
-    await page.waitForTimeout(500);
+  const found=new Map();let unchanged=0;
+  for(let pass=0;pass<600&&unchanged<14;pass++){
+    const rows=await page.locator(selector).evaluateAll((ns,selector)=>{const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};return ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c))).map((n,index)=>{const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,time,[aria-hidden="true"],[class*="timestamp" i],[class*="time" i]').forEach(x=>x.remove());const text=(clone.innerText||clone.textContent||"").trim().replace(/\s+/g," ");let p=n,meta="";for(let i=0;p&&i<5;i++,p=p.parentElement)meta+=` ${p.className||""} ${p.getAttribute?.("data-direction")||""} ${p.getAttribute?.("data-testid")||""} ${p.getAttribute?.("aria-label")||""}`;meta=meta.toLowerCase();const rect=n.getBoundingClientRect(),style=getComputedStyle(n);let incoming=true;if(/outgoing|sent|self|mine|own|from-me|message--right|justify-end|items-end/.test(meta)||style.alignSelf==="flex-end")incoming=false;else if(/incoming|received|other|from-them|message--left|justify-start|items-start/.test(meta)||style.alignSelf==="flex-start")incoming=true;else incoming=(rect.left+rect.width/2)<innerWidth/2;return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender],[class*="sender" i],[class*="author" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming,index};}).filter(x=>x.text&&x.text.length<4000)},selector);
+    const sizeBefore=found.size;const occurrences=new Map();for(const x of rows){const canonical=`${x.incoming?"in":"out"}|${x.sender}|${x.timestamp}|${x.text}`,occurrence=(occurrences.get(canonical)||0)+1;occurrences.set(canonical,occurrence);const key=x.id||`${canonical}|${occurrence}`;found.set(key,{...x,pass,canonical,occurrence});}
+    const moved=await page.evaluate(()=>{const xs=[...document.querySelectorAll('*')].filter(e=>{const s=getComputedStyle(e);return e.scrollHeight>e.clientHeight+50&&/(auto|scroll)/.test(s.overflowY)}).sort((a,b)=>b.clientHeight-a.clientHeight);const sc=xs[0]||document.scrollingElement,before=sc.scrollTop;sc.scrollTop=Math.max(0,before-Math.max(300,sc.clientHeight*.8));window.scrollTo(0,0);return{before,after:sc.scrollTop}});
+    await page.waitForTimeout(500);const count=found.size;unchanged=(rows.length===0||count===sizeBefore)?unchanged+1:0;if(moved.after<=2&&unchanged>=8)break;
   }
-  const rows=await page.locator(selector).evaluateAll((ns,selector)=>{
-    const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};
-    const candidates=ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c)));
-    return candidates.map(n=>{
-      const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,time,[aria-hidden="true"],[class*="timestamp" i],[class*="time" i]').forEach(x=>x.remove());
-      const text=(clone.innerText||clone.textContent||"").trim().replace(/\s+/g," ");
-      let p=n,meta="";for(let i=0;p&&i<4;i++,p=p.parentElement)meta+=` ${p.className||""} ${p.getAttribute?.("data-direction")||""} ${p.getAttribute?.("data-testid")||""} ${p.getAttribute?.("aria-label")||""}`;
-      meta=meta.toLowerCase();const rect=n.getBoundingClientRect(),style=getComputedStyle(n);
-      let incoming=true;
-      if(/outgoing|sent|self|mine|own|from-me|message--right|justify-end|items-end/.test(meta)||style.alignSelf==="flex-end")incoming=false;
-      else if(/incoming|received|other|from-them|message--left|justify-start|items-start/.test(meta)||style.alignSelf==="flex-start")incoming=true;
-      else incoming=(rect.left+rect.width/2)<innerWidth/2;
-      return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender],[class*="sender" i],[class*="author" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};
-    }).filter(x=>x.text&&x.text.length<4000);
-  },selector);
-  const seen=new Set,occurrences=new Map;
-  return rows.map(x=>{
-    const canonical=`${x.incoming?"in":"out"}|${x.sender}|${x.text}`;
-    const occurrence=(occurrences.get(canonical)||0)+1;occurrences.set(canonical,occurrence);
-    const stable=x.id||crypto.createHash("sha256").update(`${url}|${canonical}|${occurrence}`).digest("hex").slice(0,32);
-    return{...x,id:stable,conversationId:url};
-  }).filter(x=>{if(seen.has(x.id))return false;seen.add(x.id);return true});
+  const ordered=[...found.values()].sort((a,b)=>b.pass-a.pass||a.index-b.index),seen=new Set(),out=[];
+  for(const x of ordered){const stable=x.id||crypto.createHash("sha256").update(`${url}|${x.canonical}|${x.occurrence}`).digest("hex").slice(0,32);if(seen.has(stable))continue;seen.add(stable);out.push({...x,id:stable,conversationId:url});}
+  return out;
 }
 async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=count-1;i>=0;i--){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
 async function waitVisible(page,selectors,timeout=20000){const end=Date.now()+timeout;do{const found=await visible(page,selectors);if(found)return found;await page.waitForTimeout(250)}while(Date.now()<end);return null}

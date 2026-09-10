@@ -24,7 +24,7 @@ struct Config {
     std::string whatsappNumber;
 
     int telegramPollTimeout = 30;
-    int aiHistoryLimit = 20;
+    int aiHistoryLimit = 200;
     int aiTimeout = 30;
 
     bool privateChatsOnly = true;

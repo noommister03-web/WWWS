@@ -10,9 +10,10 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 namespace {
-constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-r3";
+constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-audited-r4";
 bool email(const std::string&v){auto a=v.find('@'),d=v.rfind('.');return a!=std::string::npos&&d!=std::string::npos&&a>0&&d>a+1&&d+1<v.size();}
 bool url(const std::string&v){return v.rfind("http://",0)==0||v.rfind("https://",0)==0;}
 std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open?accountId="+std::to_string(id)+"&mobile=1";}
@@ -30,7 +31,7 @@ std::string label(const CustoJustoConversationRecord&d){if(!d.listingTitle.empty
 int main(){try{
  const Config cfg=Config::load();const char*oid=std::getenv("OWNER_TELEGRAM_ID");if(!oid||!*oid)throw std::runtime_error("OWNER_TELEGRAM_ID is missing");long long owner=std::stoll(oid);
  Database db(cfg.dbPath);TelegramBot bot(cfg.telegramToken,cfg.telegramPollTimeout,cfg.privateChatsOnly);AiEngine ai(cfg.aiApiKey,cfg.aiBaseUrl,cfg.aiModel,cfg.aiSystemPrompt,cfg.aiTimeout);
- std::unordered_map<long long,int> state;std::unordered_map<long long,std::string> pendingName;std::unordered_map<long long,long long> pendingAccount,pendingDraft,pendingDelete;std::unordered_map<long long,std::unique_ptr<CustoJustoClient>> clients;
+ std::unordered_map<long long,int> state;std::unordered_map<long long,std::string> pendingName;std::unordered_map<long long,long long> pendingAccount,pendingDraft,pendingDelete;std::unordered_map<long long,std::unique_ptr<CustoJustoClient>> clients;std::unordered_set<long long> initialImportReported;
  auto client=[&](long long id){auto i=clients.find(id);if(i!=clients.end())return i->second.get();auto x=std::make_unique<CustoJustoClient>();x->setAccountId(id);x->setBaseUrl("https://www.custojusto.pt");auto*r=x.get();clients.emplace(id,std::move(x));return r;};
  auto mainKeys=[&](){return std::vector<std::vector<std::pair<std::string,std::string>>>{{{"👥 Аккаунты","menu_accounts"},{"💬 Все диалоги","menu_chats"}},{{"📊 Статус","menu_status"},{"ℹ️ Помощь","menu_help"}}};};
  auto accountKeys=[&](long long id){return std::vector<std::vector<std::pair<std::string,std::string>>>{{{"🌐 Войти в CustoJusto","cj_login:"+std::to_string(id)},{"✅ Проверить сессию","cj_check:"+std::to_string(id)}},{{"💬 Диалоги","cj_dialogs:"+std::to_string(id)},{"📋 Проверить объявление","cj_ads:"+std::to_string(id)}},{{"📤 Написать продавцу","cj_write:"+std::to_string(id)}},{{"🗑 Удалить аккаунт","cj_delete_ask:"+std::to_string(id)},{"⬅️ Все аккаунты","cj_accounts"}}};};
@@ -70,22 +71,28 @@ int main(){try{
    if(!a.enabled||!a.loggedIn)continue;
    auto*c=client(a.id);c->setBaseUrl(a.loginUrl);auto ds=c->getConversations();
    if(!c->isLoggedIn()){db.setCustoJustoAccountLoggedIn(a.id,false);continue;}
+   int importedMessages=0,createdDrafts=0,failedDialogs=0;
    for(auto&d:ds){
     long long cid=db.upsertCustoJustoConversation(a.id,d.url,d.listingUrl,d.listingTitle.empty()?d.title:d.listingTitle,d.buyerName,d.lastMessageId,d.lastMessage,0,d.unread);
     auto remote=c->getMessages(d.url);
+    if(!c->getLastError().empty()){failedDialogs++;continue;}
     for(auto&x:remote){
      if(db.hasCustoJustoExternalMessage(a.id,x.id))continue;
      std::string tr=x.text;
      if(x.incoming&&ai.enabled())try{MessageRecord q;q.incoming=true;q.text="Переведи на русский, только перевод:\n"+x.text;auto translated=ai.generateReply({q},"Ты точный переводчик с европейского португальского на русский. Верни только перевод.");if(!translated.empty())tr=translated;}catch(...){ }
-     db.saveCustoJustoMessage(a.id,cid,x.id,x.sender,x.text,tr,x.incoming);
+     db.saveCustoJustoMessage(a.id,cid,x.id,x.sender,x.text,tr,x.incoming);importedMessages++;
     }
-    auto full=db.getCustoJustoMessages(cid,100);
+    auto full=db.getCustoJustoMessages(cid,100000);
     if(full.empty())continue;
     const auto&last=full.back();
     if(!last.incoming)continue;
     if(db.hasCustoJustoDraftForSource(a.id,cid,last.externalMessageId))continue;
     if(!ai.enabled()){bot.sendMessage(owner,"📩 Неотвеченное сообщение CustoJusto\n\n"+(last.translatedText.empty()?last.originalText:last.translatedText));continue;}
-    try{std::vector<MessageRecord>h;for(auto&r:full){MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}makeDraft(a.id,cid,d.url,h,last.originalText,last.translatedText,last.externalMessageId);}catch(const std::exception&e){bot.sendMessage(owner,std::string("🔴 Ошибка AI: ")+e.what());}
+    try{std::vector<MessageRecord>h;const size_t keep=std::min<size_t>(full.size(),std::max(1,cfg.aiHistoryLimit));for(size_t i=full.size()-keep;i<full.size();++i){auto&r=full[i];MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}makeDraft(a.id,cid,d.url,h,last.originalText,last.translatedText,last.externalMessageId);createdDrafts++;}catch(const std::exception&e){bot.sendMessage(owner,std::string("🔴 Ошибка AI: ")+e.what());}
+   }
+   if(!initialImportReported.count(a.id)){
+    initialImportReported.insert(a.id);
+    bot.sendMessage(owner,(failedDialogs==0?"✅ Полный импорт аккаунта завершён":"⚠️ Импорт аккаунта завершён частично")+std::string("\n\nДиалогов найдено: ")+std::to_string(ds.size())+"\nНовых сообщений сохранено: "+std::to_string(importedMessages)+"\nЧерновиков подготовлено: "+std::to_string(createdDrafts)+"\nОшибок чтения: "+std::to_string(failedDialogs));
    }
   }
  },45);

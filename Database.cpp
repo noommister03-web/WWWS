@@ -1142,7 +1142,7 @@ std::vector<CustoJustoMessageRecord> Database::getCustoJustoMessages(
     int rc = sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr);
     checkSqlite(rc, db_, "prepare CustoJusto message history");
     sqlite3_bind_int64(statement, 1, conversationId);
-    sqlite3_bind_int(statement, 2, std::max(1, std::min(limit, 100)));
+    sqlite3_bind_int(statement, 2, std::max(1, std::min(limit, 100000)));
     while ((rc = sqlite3_step(statement)) == SQLITE_ROW) {
         CustoJustoMessageRecord row;
         row.id = sqlite3_column_int64(statement, 0);

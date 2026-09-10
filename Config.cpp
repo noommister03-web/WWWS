@@ -161,7 +161,7 @@ Config Config::load() {
 
     config.aiHistoryLimit = envInt(
         "AI_HISTORY_LIMIT",
-        20
+        200
     );
 
     config.aiTimeout = envInt(
