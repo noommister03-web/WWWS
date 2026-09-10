@@ -61,8 +61,8 @@ public:
     CustoJustoLoginResult login(const std::string& email, const std::string& password);
     void logout();
     bool isLoggedIn() const;
-    std::vector<CustoJustoConversation> getConversations();
-    std::vector<CustoJustoMessage> getMessages(const std::string& conversationUrl);
+    std::vector<CustoJustoConversation> getConversations(bool fullScan = false);
+    std::vector<CustoJustoMessage> getMessages(const std::string& conversationUrl, bool fullHistory = false);
     bool sendMessage(const std::string& conversationUrl, const std::string& text);
     bool getListing(const std::string& listingUrl, CustoJustoListing& listing);
     bool openListing(const std::string& listingUrl);

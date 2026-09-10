@@ -258,7 +258,7 @@ bool CustoJustoClient::isLoggedIn() const {
 }
 
 std::vector<CustoJustoConversation>
-CustoJustoClient::getConversations() {
+CustoJustoClient::getConversations(bool fullScan) {
     lastError_.clear();
 
     std::vector<CustoJustoConversation> result;
@@ -277,7 +277,8 @@ CustoJustoClient::getConversations() {
         << ","
         << "\"baseUrl\":\""
         << jsonEscape(baseUrl_)
-        << "\""
+        << "\","
+        << "\"fullScan\":" << (fullScan ? "true" : "false")
         << "}";
 
     std::string response;
@@ -344,7 +345,8 @@ CustoJustoClient::getConversations() {
 
 std::vector<CustoJustoMessage>
 CustoJustoClient::getMessages(
-    const std::string& conversationUrl
+    const std::string& conversationUrl,
+    bool fullHistory
 ) {
     lastError_.clear();
 
@@ -369,7 +371,8 @@ CustoJustoClient::getMessages(
         << ","
         << "\"conversationUrl\":\""
         << jsonEscape(conversationUrl)
-        << "\""
+        << "\","
+        << "\"fullHistory\":" << (fullHistory ? "true" : "false")
         << "}";
 
     std::string response;

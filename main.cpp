@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 namespace {
-constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-audited-r4";
+constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-audited-r5";
 bool email(const std::string&v){auto a=v.find('@'),d=v.rfind('.');return a!=std::string::npos&&d!=std::string::npos&&a>0&&d>a+1&&d+1<v.size();}
 bool url(const std::string&v){return v.rfind("http://",0)==0||v.rfind("https://",0)==0;}
 std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open?accountId="+std::to_string(id)+"&mobile=1";}
@@ -68,32 +68,28 @@ int main(){try{
   if(s==7){long long id=pendingDraft[m.chatId];state[m.chatId]=0;auto x=db.getCustoJustoDraft(id);if(!x)return true;try{std::vector<MessageRecord>h;if(x->conversationId>0)for(auto&r:db.getCustoJustoMessages(x->conversationId,cfg.aiHistoryLimit)){MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}if(!x->incomingText.empty()){MessageRecord z;z.incoming=true;z.text=x->incomingText;h.push_back(z);}MessageRecord f;f.incoming=true;f.text="Комментарий владельца к прошлому черновику: "+m.text+". Подготовь новый вариант, сохрани факты разговора и учти этот стиль.";h.push_back(f);auto text=ai.generateReply(h,salesPrompt(cfg.whatsappNumber));db.updateCustoJustoDraftText(id,text);showDraft(m.chatId,id);}catch(const std::exception&e){bot.sendMessage(m.chatId,std::string("🔴 Ошибка AI: ")+e.what());}return true;}return true;});
  bot.setPeriodicHandler([&](){
   for(auto&a:db.getCustoJustoAccounts()){
-   if(!a.enabled||!a.loggedIn)continue;
-   auto*c=client(a.id);c->setBaseUrl(a.loginUrl);auto ds=c->getConversations();
-   if(!c->isLoggedIn()){db.setCustoJustoAccountLoggedIn(a.id,false);continue;}
+   if(!a.enabled)continue;
+   auto*c=client(a.id);c->setBaseUrl(a.loginUrl);
+   if(!c->checkSession()){db.setCustoJustoAccountLoggedIn(a.id,false);continue;}
+   db.setCustoJustoAccountLoggedIn(a.id,true);
+   const bool fullImport=!initialImportReported.count(a.id);
+   auto ds=c->getConversations(fullImport);
+   if(!c->getLastError().empty()){if(fullImport)bot.sendMessage(owner,"⚠️ Не удалось получить список диалогов CustoJusto: "+c->getLastError());continue;}
    int importedMessages=0,createdDrafts=0,failedDialogs=0;
+   if(fullImport&&ds.empty()&&!db.getCustoJustoConversations(a.id,1).empty()){bot.sendMessage(owner,"⚠️ CustoJusto не вернул список диалогов. Полный импорт не отмечен завершённым и будет повторён автоматически.");continue;}
    for(auto&d:ds){
     long long cid=db.upsertCustoJustoConversation(a.id,d.url,d.listingUrl,d.listingTitle.empty()?d.title:d.listingTitle,d.buyerName,d.lastMessageId,d.lastMessage,0,d.unread);
-    auto remote=c->getMessages(d.url);
+    auto remote=c->getMessages(d.url,fullImport);
     if(!c->getLastError().empty()){failedDialogs++;continue;}
-    for(auto&x:remote){
-     if(db.hasCustoJustoExternalMessage(a.id,x.id))continue;
-     std::string tr=x.text;
-     if(x.incoming&&ai.enabled())try{MessageRecord q;q.incoming=true;q.text="Переведи на русский, только перевод:\n"+x.text;auto translated=ai.generateReply({q},"Ты точный переводчик с европейского португальского на русский. Верни только перевод.");if(!translated.empty())tr=translated;}catch(...){ }
-     db.saveCustoJustoMessage(a.id,cid,x.id,x.sender,x.text,tr,x.incoming);importedMessages++;
-    }
-    auto full=db.getCustoJustoMessages(cid,100000);
-    if(full.empty())continue;
-    const auto&last=full.back();
-    if(!last.incoming)continue;
-    if(db.hasCustoJustoDraftForSource(a.id,cid,last.externalMessageId))continue;
-    if(!ai.enabled()){bot.sendMessage(owner,"📩 Неотвеченное сообщение CustoJusto\n\n"+(last.translatedText.empty()?last.originalText:last.translatedText));continue;}
-    try{std::vector<MessageRecord>h;const size_t keep=std::min<size_t>(full.size(),std::max(1,cfg.aiHistoryLimit));for(size_t i=full.size()-keep;i<full.size();++i){auto&r=full[i];MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}makeDraft(a.id,cid,d.url,h,last.originalText,last.translatedText,last.externalMessageId);createdDrafts++;}catch(const std::exception&e){bot.sendMessage(owner,std::string("🔴 Ошибка AI: ")+e.what());}
+    for(auto&x:remote){if(db.hasCustoJustoExternalMessage(a.id,x.id))continue;db.saveCustoJustoMessage(a.id,cid,x.id,x.sender,x.text,x.text,x.incoming);importedMessages++;}
+    auto full=db.getCustoJustoMessages(cid,100000);if(full.empty())continue;const auto&last=full.back();if(!last.incoming||db.hasCustoJustoDraftForSource(a.id,cid,last.externalMessageId))continue;
+    std::string translated=last.originalText;
+    if(ai.enabled())try{MessageRecord q;q.incoming=true;q.text="Переведи на русский, только перевод:\n"+last.originalText;auto t=ai.generateReply({q},"Ты точный переводчик с европейского португальского на русский. Верни только перевод.");if(!t.empty())translated=t;}catch(...){ }
+    if(!ai.enabled()){bot.sendMessage(owner,"📩 Неотвеченное сообщение CustoJusto\n\n"+translated);continue;}
+    try{std::vector<MessageRecord>h;const size_t keep=std::min<size_t>(full.size(),std::max(1,cfg.aiHistoryLimit));for(size_t i=full.size()-keep;i<full.size();++i){auto&r=full[i];MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}const bool existed=db.hasCustoJustoDraftForSource(a.id,cid,last.externalMessageId);makeDraft(a.id,cid,d.url,h,last.originalText,translated,last.externalMessageId);if(!existed&&db.hasCustoJustoDraftForSource(a.id,cid,last.externalMessageId))createdDrafts++;}catch(const std::exception&e){bot.sendMessage(owner,std::string("🔴 Ошибка AI: ")+e.what());}
    }
-   if(!initialImportReported.count(a.id)){
-    initialImportReported.insert(a.id);
-    bot.sendMessage(owner,(failedDialogs==0?"✅ Полный импорт аккаунта завершён":"⚠️ Импорт аккаунта завершён частично")+std::string("\n\nДиалогов найдено: ")+std::to_string(ds.size())+"\nНовых сообщений сохранено: "+std::to_string(importedMessages)+"\nЧерновиков подготовлено: "+std::to_string(createdDrafts)+"\nОшибок чтения: "+std::to_string(failedDialogs));
-   }
+   if(fullImport&&failedDialogs==0){initialImportReported.insert(a.id);bot.sendMessage(owner,"✅ Полный импорт аккаунта завершён\n\nДиалогов найдено: "+std::to_string(ds.size())+"\nНовых сообщений сохранено: "+std::to_string(importedMessages)+"\nЧерновиков подготовлено: "+std::to_string(createdDrafts)+"\nОшибок чтения: 0");}
+   else if(fullImport)bot.sendMessage(owner,"⚠️ Импорт аккаунта завершён частично\n\nДиалогов найдено: "+std::to_string(ds.size())+"\nНовых сообщений сохранено: "+std::to_string(importedMessages)+"\nЧерновиков подготовлено: "+std::to_string(createdDrafts)+"\nОшибок чтения: "+std::to_string(failedDialogs)+"\nНепрочитанные диалоги будут повторены автоматически.");
   }
  },45);
  showMain(owner);std::cout<<"Telegram CRM started\n";bot.run();
