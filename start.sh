@@ -6,7 +6,9 @@ PORT="${PORT:-8080}"
 echo "WWWS release 2026.09.11-r1 (AI hardening + guarded CustoJusto worker)"
 PIDS=""
 stop(){ [ -n "$PIDS" ] && kill $PIDS 2>/dev/null || true; wait 2>/dev/null || true; }
-trap stop INT TERM EXIT
+terminate(){ trap - INT TERM EXIT; stop; exit 0; }
+trap terminate INT TERM
+trap stop EXIT
 export DISPLAY=:99
 mkdir -p /tmp/.X11-unix /app/data/custojusto/profiles
 rm -f /tmp/.X99-lock
@@ -26,7 +28,6 @@ node /app/gateway.js >/tmp/gateway.log 2>&1 & GATEWAY_PID=$!; PIDS="$PIDS $GATEW
 sleep 1
 node -e 'fetch("http://127.0.0.1:"+(process.env.PORT||"8080")+"/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || { cat /tmp/gateway.log >&2; exit 1; }
 /app/tg_bot >/tmp/tg-bot.log 2>&1 & BOT_PID=$!; PIDS="$PIDS $BOT_PID"
-
 while :; do
   for pid in $XVFB_PID $OPENBOX_PID $VNC_PID $WEBSOCKIFY_PID $WORKER_PID $GUARD_PID $GATEWAY_PID $BOT_PID; do
     if ! kill -0 "$pid" 2>/dev/null; then
