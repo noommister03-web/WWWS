@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 namespace {
-constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-audited-r5";
+constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-audited-r6";
 bool email(const std::string&v){auto a=v.find('@'),d=v.rfind('.');return a!=std::string::npos&&d!=std::string::npos&&a>0&&d>a+1&&d+1<v.size();}
 bool url(const std::string&v){return v.rfind("http://",0)==0||v.rfind("https://",0)==0;}
 std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open?accountId="+std::to_string(id)+"&mobile=1";}
