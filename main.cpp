@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 namespace {
-constexpr const char* WWWS_RELEASE = "2026.09.09-approval-r2";
+constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-r3";
 bool email(const std::string&v){auto a=v.find('@'),d=v.rfind('.');return a!=std::string::npos&&d!=std::string::npos&&a>0&&d>a+1&&d+1<v.size();}
 bool url(const std::string&v){return v.rfind("http://",0)==0||v.rfind("https://",0)==0;}
 std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open?accountId="+std::to_string(id)+"&mobile=1";}
@@ -38,7 +38,7 @@ int main(){try{
  auto showMain=[&](long long chat){bot.sendMessageWithKeyboard(chat,"🏠 WWWS · CustoJusto CRM · "+std::string(WWWS_RELEASE)+"\n\nAI готовит ответы, но отправляет их только после твоего подтверждения.",mainKeys());};
  auto showAccount=[&](long long chat,const CustoJustoAccount&a){bot.sendMessageWithKeyboard(chat,"👤 "+a.name+"\n\nEmail: "+a.email+"\n"+status(a),accountKeys(a.id));};
  auto showDraft=[&](long long chat,long long id){auto d=db.getCustoJustoDraft(id);if(!d||d->status!="pending")return;std::string t="📝 Черновик #"+std::to_string(id);if(!d->translatedIncoming.empty())t+="\n\n🇷🇺 Продавец: "+d->translatedIncoming;t+="\n\n🇵🇹 Ответ:\n"+d->text+"\n\nОтправить?";bot.sendMessageWithKeyboard(chat,t,{{{"✅ Отправить","draft_send:"+std::to_string(id)},{"✏️ Изменить","draft_edit:"+std::to_string(id)}},{{"🔄 Другой вариант","draft_regen:"+std::to_string(id)},{"❌ Отклонить","draft_cancel:"+std::to_string(id)}}});};
- auto makeDraft=[&](long long accountId,long long conversationId,const std::string&target,const std::vector<MessageRecord>&history,const std::string&incoming,const std::string&translated){std::string reply=ai.generateReply(history,salesPrompt(cfg.whatsappNumber));if(conversationId<=0)conversationId=db.upsertCustoJustoConversation(accountId,target,target,"Объявление","","","",std::time(nullptr),false);long long id=db.createCustoJustoDraft(accountId,conversationId,target,reply,incoming,translated);showDraft(owner,id);};
+ auto makeDraft=[&](long long accountId,long long conversationId,const std::string&target,const std::vector<MessageRecord>&history,const std::string&incoming,const std::string&translated,const std::string&sourceId=""){if(!sourceId.empty()&&db.hasCustoJustoDraftForSource(accountId,conversationId,sourceId))return;std::string reply=ai.generateReply(history,salesPrompt(cfg.whatsappNumber));if(reply.empty())return;if(conversationId<=0)conversationId=db.upsertCustoJustoConversation(accountId,target,target,"Объявление","","","",std::time(nullptr),false);long long id=db.createCustoJustoDraft(accountId,conversationId,target,reply,incoming,translated,sourceId);if(id>0)showDraft(owner,id);};
  bot.setCallbackHandler([&](const CallbackQuery&cb){if(cb.senderId!=owner){bot.answerCallbackQuery(cb.id);return true;}bot.answerCallbackQuery(cb.id);const auto&d=cb.data;
   if(d=="menu_main"){state[cb.chatId]=0;showMain(cb.chatId);return true;}if(d=="menu_accounts"){bot.sendMessageWithKeyboard(cb.chatId,"👥 Аккаунты CustoJusto",accountsKeys());return true;}if(d=="cj_accounts"){bot.sendMessageWithKeyboard(cb.chatId,"👥 Аккаунты CustoJusto",accountsKeys());return true;}
   if(d=="menu_status"){auto as=db.getCustoJustoAccounts();int active=0;for(auto&a:as)if(a.enabled&&a.loggedIn)active++;bot.sendMessageWithKeyboard(cb.chatId,"📊 Статус\n\nАккаунтов: "+std::to_string(as.size())+"\nАктивных: "+std::to_string(active)+"\nAI: "+(ai.enabled()?"🟢 настроен":"🔴 не настроен")+"\nРежим отправки: подтверждение владельцем\nСборка: "+std::string(WWWS_RELEASE),mainKeys());return true;}
@@ -65,6 +65,29 @@ int main(){try{
   if(s==5){long long id=pendingAccount[m.chatId];state[m.chatId]=0;if(!url(m.text)){bot.sendMessage(m.chatId,"❌ Нужна полная ссылка.");return true;}bool alreadyContacted=false;for(auto&r:db.getCustoJustoConversations(id,1000)){if(r.conversationUrl==m.text||r.listingUrl==m.text){if(!db.getCustoJustoMessages(r.id,1).empty()){alreadyContacted=true;break;}}}if(alreadyContacted){bot.sendMessage(m.chatId,"ℹ️ По этому объявлению уже была переписка. Открой «Диалоги», чтобы продолжить её — повторное первое сообщение не создано.");return true;}if(!ai.enabled()){bot.sendMessage(m.chatId,"🔴 AI не настроен: проверь AI_API_KEY, AI_BASE_URL и AI_MODEL.");return true;}try{CustoJustoListing l;auto*c=client(id);c->getListing(m.text,l);MessageRecord q;q.incoming=true;q.text="Создай первое сообщение по объявлению. Не задавай больше одного-двух вопросов и пока не упоминай CTT или WhatsApp. Объявление: "+(l.title.empty()?m.text:l.title+" — "+m.text);makeDraft(id,0,m.text,{q},"","");}catch(const std::exception&e){bot.sendMessage(m.chatId,std::string("🔴 Ошибка AI: ")+e.what());}return true;}
   if(s==6){long long id=pendingDraft[m.chatId];state[m.chatId]=0;if(m.text.empty())return true;db.updateCustoJustoDraftText(id,m.text);showDraft(m.chatId,id);return true;}
   if(s==7){long long id=pendingDraft[m.chatId];state[m.chatId]=0;auto x=db.getCustoJustoDraft(id);if(!x)return true;try{std::vector<MessageRecord>h;if(x->conversationId>0)for(auto&r:db.getCustoJustoMessages(x->conversationId,cfg.aiHistoryLimit)){MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}if(!x->incomingText.empty()){MessageRecord z;z.incoming=true;z.text=x->incomingText;h.push_back(z);}MessageRecord f;f.incoming=true;f.text="Комментарий владельца к прошлому черновику: "+m.text+". Подготовь новый вариант, сохрани факты разговора и учти этот стиль.";h.push_back(f);auto text=ai.generateReply(h,salesPrompt(cfg.whatsappNumber));db.updateCustoJustoDraftText(id,text);showDraft(m.chatId,id);}catch(const std::exception&e){bot.sendMessage(m.chatId,std::string("🔴 Ошибка AI: ")+e.what());}return true;}return true;});
- bot.setPeriodicHandler([&](){for(auto&a:db.getCustoJustoAccounts()){if(!a.enabled||!a.loggedIn)continue;auto*c=client(a.id);c->setBaseUrl(a.loginUrl);auto ds=c->getConversations();if(!c->isLoggedIn()){db.setCustoJustoAccountLoggedIn(a.id,false);continue;}for(auto&d:ds){long long cid=db.upsertCustoJustoConversation(a.id,d.url,d.listingUrl,d.listingTitle.empty()?d.title:d.listingTitle,d.buyerName,d.lastMessageId,d.lastMessage,0,d.unread);std::string latestIncoming,latestTranslated;bool lastNewWasIncoming=false;for(auto&x:c->getMessages(d.url)){if(db.hasCustoJustoExternalMessage(a.id,x.id))continue;std::string tr=x.text;if(x.incoming)try{if(ai.enabled()){MessageRecord q;q.incoming=true;q.text="Переведи на русский, только перевод:\n"+x.text;tr=ai.generateReply({q},"Ты точный переводчик с европейского португальского на русский. Верни только перевод.");}}catch(...){ }db.saveCustoJustoMessage(a.id,cid,x.id,x.sender,x.text,tr,x.incoming);lastNewWasIncoming=x.incoming;if(x.incoming){latestIncoming=x.text;latestTranslated=tr;}}if(!lastNewWasIncoming||latestIncoming.empty())continue;if(!ai.enabled()){bot.sendMessage(owner,"📩 Новое сообщение\n\n"+latestTranslated);continue;}try{std::vector<MessageRecord>h;for(auto&r:db.getCustoJustoMessages(cid,cfg.aiHistoryLimit)){MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}makeDraft(a.id,cid,d.url,h,latestIncoming,latestTranslated);}catch(const std::exception&e){bot.sendMessage(owner,std::string("🔴 Ошибка AI: ")+e.what());}}}},45);
+ bot.setPeriodicHandler([&](){
+  for(auto&a:db.getCustoJustoAccounts()){
+   if(!a.enabled||!a.loggedIn)continue;
+   auto*c=client(a.id);c->setBaseUrl(a.loginUrl);auto ds=c->getConversations();
+   if(!c->isLoggedIn()){db.setCustoJustoAccountLoggedIn(a.id,false);continue;}
+   for(auto&d:ds){
+    long long cid=db.upsertCustoJustoConversation(a.id,d.url,d.listingUrl,d.listingTitle.empty()?d.title:d.listingTitle,d.buyerName,d.lastMessageId,d.lastMessage,0,d.unread);
+    auto remote=c->getMessages(d.url);
+    for(auto&x:remote){
+     if(db.hasCustoJustoExternalMessage(a.id,x.id))continue;
+     std::string tr=x.text;
+     if(x.incoming&&ai.enabled())try{MessageRecord q;q.incoming=true;q.text="Переведи на русский, только перевод:\n"+x.text;auto translated=ai.generateReply({q},"Ты точный переводчик с европейского португальского на русский. Верни только перевод.");if(!translated.empty())tr=translated;}catch(...){ }
+     db.saveCustoJustoMessage(a.id,cid,x.id,x.sender,x.text,tr,x.incoming);
+    }
+    auto full=db.getCustoJustoMessages(cid,100);
+    if(full.empty())continue;
+    const auto&last=full.back();
+    if(!last.incoming)continue;
+    if(db.hasCustoJustoDraftForSource(a.id,cid,last.externalMessageId))continue;
+    if(!ai.enabled()){bot.sendMessage(owner,"📩 Неотвеченное сообщение CustoJusto\n\n"+(last.translatedText.empty()?last.originalText:last.translatedText));continue;}
+    try{std::vector<MessageRecord>h;for(auto&r:full){MessageRecord z;z.incoming=r.incoming;z.text=r.originalText;h.push_back(z);}makeDraft(a.id,cid,d.url,h,last.originalText,last.translatedText,last.externalMessageId);}catch(const std::exception&e){bot.sendMessage(owner,std::string("🔴 Ошибка AI: ")+e.what());}
+   }
+  }
+ },45);
  showMain(owner);std::cout<<"Telegram CRM started\n";bot.run();
 }catch(const std::exception&e){std::cerr<<"Fatal error: "<<e.what()<<'\n';return 1;}return 0;}

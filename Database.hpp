@@ -78,6 +78,7 @@ struct CustoJustoDraftRecord {
     std::string text;
     std::string incomingText;
     std::string translatedIncoming;
+    std::string sourceExternalMessageId;
     std::string status = "pending";
     long long createdAt = 0;
 };
@@ -179,7 +180,8 @@ public:
 
     std::vector<CustoJustoConversationRecord> getCustoJustoConversations(long long accountId, int limit = 100);
 
-    long long createCustoJustoDraft(long long accountId, long long conversationId, const std::string& targetUrl, const std::string& text, const std::string& incomingText = "", const std::string& translatedIncoming = "");
+    long long createCustoJustoDraft(long long accountId, long long conversationId, const std::string& targetUrl, const std::string& text, const std::string& incomingText = "", const std::string& translatedIncoming = "", const std::string& sourceExternalMessageId = "");
+    bool hasCustoJustoDraftForSource(long long accountId, long long conversationId, const std::string& sourceExternalMessageId);
     std::optional<CustoJustoDraftRecord> getCustoJustoDraft(long long id);
     bool updateCustoJustoDraftText(long long id, const std::string& text);
     bool setCustoJustoDraftStatus(long long id, const std::string& status);

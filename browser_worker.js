@@ -21,7 +21,7 @@ async function conversations(page,b){
   await cookies(page);
   await page.waitForTimeout(1500);
   let previousConversationCount=-1,stableConversationPasses=0;
-  for(let pass=0;pass<40&&stableConversationPasses<3;pass++){
+  for(let pass=0;pass<120&&stableConversationPasses<8;pass++){
     const count=await page.locator('a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]').count();
     stableConversationPasses=count===previousConversationCount?stableConversationPasses+1:0;
     previousConversationCount=count;
@@ -49,7 +49,7 @@ async function messages(page,url){
   await page.waitForTimeout(1500);
   const selector='article,[data-message-id],[data-testid*="message" i],[data-testid*="bubble" i],[class*="chat-message" i],[class*="message-bubble" i],[class*="messageItem" i],[class*="message-item" i],[class*="bubble" i]';
   let previousMessageCount=-1,stableMessagePasses=0;
-  for(let pass=0;pass<80&&stableMessagePasses<4;pass++){
+  for(let pass=0;pass<240&&stableMessagePasses<10;pass++){
     const count=await page.locator(selector).count();
     stableMessagePasses=count===previousMessageCount?stableMessagePasses+1:0;
     previousMessageCount=count;
