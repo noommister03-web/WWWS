@@ -10,7 +10,7 @@ RUN npm install --omit=dev \
     && npx playwright install --with-deps chromium \
     && npm cache clean --force
 
-COPY browser_worker.js ./
+COPY browser_worker.js cj_identity.js ./
 
 RUN mkdir -p /app/data/custojusto/profiles \
     && chown -R node:node /app

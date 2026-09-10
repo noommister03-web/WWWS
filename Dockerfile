@@ -34,7 +34,7 @@ WORKDIR /app
 COPY --from=worker-deps /worker/node_modules /app/node_modules
 COPY --from=worker-deps /ms-playwright /ms-playwright
 COPY --from=builder /app/build/tg_bot /app/tg_bot
-COPY browser_worker.js gateway.js manual_browser.js package.json start.sh ./
+COPY browser_worker.js cj_identity.js gateway.js manual_browser.js package.json start.sh ./
 RUN mkdir -p /app/data/custojusto/profiles && chmod +x /app/start.sh
 ENV DB_PATH=/app/data/bot.sqlite3
 ENV BROWSER_WORKER_URL=http://127.0.0.1:3001
