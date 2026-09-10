@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 namespace {
-constexpr const char* WWWS_RELEASE = "2026.09.10-full-account-audited-r7";
+constexpr const char* WWWS_RELEASE = "2026.09.10-custojusto-audit-local-r8";
 bool email(const std::string&v){auto a=v.find('@'),d=v.rfind('.');return a!=std::string::npos&&d!=std::string::npos&&a>0&&d>a+1&&d+1<v.size();}
 bool url(const std::string&v){return v.rfind("http://",0)==0||v.rfind("https://",0)==0;}
 std::string browserLink(long long id){const char*v=std::getenv("REMOTE_BROWSER_URL");if(!v||!*v)return"";std::string r=v;while(!r.empty()&&r.back()=='/')r.pop_back();return r+"/browser-api/manual/open?accountId="+std::to_string(id)+"&mobile=1";}
@@ -50,7 +50,7 @@ int main(){try{
   if(d.rfind("cj_login:",0)==0){auto a=db.getCustoJustoAccount(std::stoll(d.substr(9)));if(!a)return true;auto u=browserLink(a->id);bot.sendMessageWithKeyboard(cb.chatId,u.empty()?"🔴 REMOTE_BROWSER_URL не настроен.":"🌐 Открой защищённый браузер:\n"+u,accountKeys(a->id));return true;}
   if(d.rfind("cj_check:",0)==0){auto a=db.getCustoJustoAccount(std::stoll(d.substr(9)));if(!a)return true;auto*c=client(a->id);c->setBaseUrl(a->loginUrl);bool ok=c->checkSession();db.setCustoJustoAccountLoggedIn(a->id,ok);bot.sendMessageWithKeyboard(cb.chatId,ok?"🟢 Сессия активна.":"🔴 Сессия не подтверждена.",accountKeys(a->id));return true;}
   if(d.rfind("cj_dialogs:",0)==0){long long id=std::stoll(d.substr(11));auto a=db.getCustoJustoAccount(id);if(!a)return true;auto*c=client(id);c->setBaseUrl(a->loginUrl);if(a->loggedIn)for(auto&x:c->getConversations())db.upsertCustoJustoConversation(id,x.url,x.listingUrl,x.listingTitle.empty()?x.title:x.listingTitle,x.buyerName,x.lastMessageId,x.lastMessage,0,x.unread);auto rows=db.getCustoJustoConversations(id,100);std::vector<std::vector<std::pair<std::string,std::string>>>k;for(auto&r:rows)k.push_back({{label(r),"dialog:"+std::to_string(r.id)}});k.push_back({{"⬅️ Аккаунт","cj_account:"+std::to_string(id)}});bot.sendMessageWithKeyboard(cb.chatId,"💬 Диалоги: "+std::to_string(rows.size()),k);return true;}
-  if(d.rfind("dialog:",0)==0){auto r=db.getCustoJustoConversation(std::stoll(d.substr(7)));if(!r)return true;auto ms=db.getCustoJustoMessages(r->id,30);std::string t="💬 "+label(*r)+"\n\n";for(auto&m:ms)t+=(m.incoming?"👤 ":"🤖 ")+(m.translatedText.empty()?m.originalText:m.translatedText)+"\n\n";bot.sendMessageWithKeyboard(cb.chatId,t,{{{"🔄 Обновить","dialog:"+std::to_string(r->id)},{"⬅️ Диалоги","cj_dialogs:"+std::to_string(r->accountId)}}});return true;}
+  if(d.rfind("dialog:",0)==0){auto r=db.getCustoJustoConversation(std::stoll(d.substr(7)));if(!r)return true;auto a=db.getCustoJustoAccount(r->accountId);if(a&&a->loggedIn){auto*c=client(a->id);c->setBaseUrl(a->loginUrl);auto remote=c->getMessages(r->conversationUrl,false);if(c->getLastError().empty())for(auto&x:remote)if(!db.hasCustoJustoExternalMessage(a->id,x.id))db.saveCustoJustoMessage(a->id,r->id,x.id,x.sender,x.text,x.text,x.incoming);}auto ms=db.getCustoJustoMessages(r->id,30);std::string t="💬 "+label(*r)+"\n\n";for(auto&m:ms)t+=(m.incoming?"👤 ":"🤖 ")+(m.translatedText.empty()?m.originalText:m.translatedText)+"\n\n";bot.sendMessageWithKeyboard(cb.chatId,t,{{{"🔄 Обновить","dialog:"+std::to_string(r->id)},{"⬅️ Диалоги","cj_dialogs:"+std::to_string(r->accountId)}}});return true;}
   if(d.rfind("cj_ads:",0)==0){state[cb.chatId]=4;pendingAccount[cb.chatId]=std::stoll(d.substr(7));bot.sendMessage(cb.chatId,"📋 Пришли ссылку на объявление.");return true;}
   if(d.rfind("cj_write:",0)==0){long long id=std::stoll(d.substr(9));auto a=db.getCustoJustoAccount(id);if(!a||!a->loggedIn){bot.sendMessage(cb.chatId,"🔐 Сначала подтверди сессию.");return true;}state[cb.chatId]=5;pendingAccount[cb.chatId]=id;bot.sendMessage(cb.chatId,"📤 Пришли ссылку на объявление.");return true;}
   if(d.rfind("cj_delete_ask:",0)==0){long long id=std::stoll(d.substr(14));pendingDelete[cb.chatId]=id;bot.sendMessageWithKeyboard(cb.chatId,"⚠️ Удалить аккаунт и всю сохранённую историю без восстановления?",{{{"🗑 Да, удалить всё","cj_delete_yes:"+std::to_string(id)},{"Отмена","cj_account:"+std::to_string(id)}}});return true;}
@@ -76,7 +76,7 @@ int main(){try{
    auto ds=c->getConversations(fullImport);
    if(!c->getLastError().empty()){if(fullImport)bot.sendMessage(owner,"⚠️ Не удалось получить список диалогов CustoJusto: "+c->getLastError());continue;}
    int importedMessages=0,createdDrafts=0,failedDialogs=0;
-   if(fullImport&&ds.empty()&&!db.getCustoJustoConversations(a.id,1).empty()){bot.sendMessage(owner,"⚠️ CustoJusto не вернул список диалогов. Полный импорт не отмечен завершённым и будет повторён автоматически.");continue;}
+   if(fullImport&&ds.empty()){bot.sendMessage(owner,"⚠️ CustoJusto не вернул список диалогов. Полный импорт не отмечен завершённым и будет повторён автоматически.");continue;}
    for(auto&d:ds){
     long long cid=db.upsertCustoJustoConversation(a.id,d.url,d.listingUrl,d.listingTitle.empty()?d.title:d.listingTitle,d.buyerName,d.lastMessageId,d.lastMessage,0,d.unread);
     auto remote=c->getMessages(d.url,fullImport);

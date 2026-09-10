@@ -3,6 +3,7 @@ const { chromium } = require("playwright");
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
+const { cleanText, canonicalConversationUrl, deduplicateMessages } = require("./cj_identity");
 const app = express();
 app.use(express.json({limit:"1mb"}));
 const PORT=Number(process.env.BROWSER_WORKER_PORT||3001), SECRET=process.env.BROWSER_WORKER_SHARED_SECRET||"";
@@ -21,25 +22,29 @@ async function conversations(page,b,fullScan=false){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);await page.waitForTimeout(1500);
   const selector='a[href],[data-conversation-id],[data-chat-id],[data-testid*="conversation" i],[data-testid*="chat" i]';
-  const found=new Map();let unchanged=0,reachedBottom=!fullScan;
-  if(fullScan){for(let i=0;i<20;i++){const p=await scrollRelevant(page,selector,"up");if(p.top<=2)break;await page.waitForTimeout(100)}}
-  for(let pass=0;pass<(fullScan?400:1)&&unchanged<12;pass++){
+  const found=new Map();let unchanged=0,reachedBottom=false;
+  for(let i=0;i<20;i++){const p=await scrollRelevant(page,selector,"up");if(p.top<=2)break;await page.waitForTimeout(100)}
+  const maxPasses=fullScan?400:80;
+  for(let pass=0;pass<maxPasses&&unchanged<(fullScan?12:6);pass++){
     const rows=await page.locator(selector).evaluateAll((nodes,origin)=>nodes.map((n,i)=>{
       const anchor=n.matches('a[href]')?n:n.closest('a[href]');const raw=anchor?.getAttribute("href")||n.getAttribute("data-url")||n.getAttribute("data-href")||"";let u;try{u=new URL(raw,origin)}catch{return null}
       const text=(n.innerText||n.textContent||anchor?.innerText||"").trim().replace(/\s+/g," ");const marker=`${n.getAttribute("data-conversation-id")||""} ${n.getAttribute("data-chat-id")||""} ${n.getAttribute("data-testid")||""} ${n.className||""}`.toLowerCase();const route=`${u.pathname}${u.search}${u.hash}`.toLowerCase();const root=/^\/(mensagens|messages)\/?$/.test(u.pathname.toLowerCase())&&!u.search&&!u.hash;if(root||!(/(mensagen|message|conversa|conversation|chat)/.test(route)||/(conversation|chat|thread|message)/.test(marker)))return null;
-      return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог",index:i};
+      const unread=/(unread|não lida|nao lida|por ler)/i.test(marker+' '+text)||n.getAttribute('aria-current')==='true';
+      return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог",index:i,unread};
     }).filter(Boolean),b);
-    const before=found.size;for(const row of rows)found.set(row.url,{...row,pass});unchanged=found.size===before?unchanged+1:0;
-    const moved=fullScan?await scrollRelevant(page,selector,"down"):{top:0,max:0};
-    if(fullScan){await page.waitForTimeout(500);if(moved.top>=moved.max-2){reachedBottom=true;if(unchanged>=6)break;}}
+    const before=found.size;for(const row of rows){const key=canonicalConversationUrl(row.url,b);found.set(key,{...row,url:key,pass})}unchanged=found.size===before?unchanged+1:0;
+    const moved=await scrollRelevant(page,selector,"down");
+    await page.waitForTimeout(500);
+    if(moved.top>=moved.max-2){reachedBottom=true;if(unchanged>=(fullScan?6:3))break;}
   }
-  if(fullScan&&!reachedBottom)throw Error("Full conversation scan did not reach the end of the account list");
-  return [...found.values()].sort((a,b)=>a.pass-b.pass||a.index-b.index).map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:false}));
+  if(!reachedBottom)throw Error(`${fullScan?"Full":"Recent"} conversation scan did not reach the end of the account list`);
+  return [...found.values()].sort((a,b)=>a.pass-b.pass||a.index-b.index).map(x=>({id:x.id,url:x.url,title:x.title,listingUrl:"",listingTitle:x.title,buyerName:"",lastMessage:"",lastMessageId:"",lastMessageAt:"",unread:x.unread}));
 }
 async function messages(page,url,fullHistory=false){
+  url=canonicalConversationUrl(url);
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT});await cookies(page);await page.waitForTimeout(1500);
   const selector='article,[data-message-id],[data-testid*="message" i],[data-testid*="bubble" i],[class*="chat-message" i],[class*="message-bubble" i],[class*="messageItem" i],[class*="message-item" i],[class*="bubble" i]';
-  const read=()=>page.locator(selector).evaluateAll((ns,selector)=>{const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};return ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c))).map(n=>{const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,time,[aria-hidden="true"],[class*="timestamp" i],[class*="time" i]').forEach(x=>x.remove());const text=(clone.innerText||clone.textContent||"").trim().replace(/\s+/g," ");let p=n,meta="";for(let i=0;p&&i<5;i++,p=p.parentElement)meta+=` ${p.className||""} ${p.getAttribute?.("data-direction")||""} ${p.getAttribute?.("data-testid")||""} ${p.getAttribute?.("aria-label")||""}`;meta=meta.toLowerCase();const rect=n.getBoundingClientRect(),style=getComputedStyle(n);let incoming=true;if(/outgoing|sent|self|mine|own|from-me|message--right|justify-end|items-end/.test(meta)||style.alignSelf==="flex-end")incoming=false;else if(/incoming|received|other|from-them|message--left|justify-start|items-start/.test(meta)||style.alignSelf==="flex-start")incoming=true;else incoming=(rect.left+rect.width/2)<innerWidth/2;return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender],[class*="sender" i],[class*="author" i]')?.textContent?.trim()||"",text,timestamp:n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"",incoming};}).filter(x=>x.text&&x.text.length<4000)},selector);
+  const read=()=>page.locator(selector).evaluateAll((ns,selector)=>{const visible=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>20&&r.height>10&&s.display!=="none"&&s.visibility!=="hidden"};return ns.filter(visible).filter(n=>!Array.from(n.children).some(c=>c.matches?.(selector)&&visible(c))).map(n=>{const timestamp=n.querySelector("time")?.getAttribute("datetime")||n.getAttribute("data-timestamp")||"";const clone=n.cloneNode(true);clone.querySelectorAll('button,svg,time,[aria-hidden="true"],[class*="timestamp" i],[class*="time" i]').forEach(x=>x.remove());const text=(clone.innerText||clone.textContent||"").trim().replace(/\s+/g," ");let p=n,meta="";for(let i=0;p&&i<5;i++,p=p.parentElement)meta+=` ${p.className||""} ${p.getAttribute?.("data-direction")||""} ${p.getAttribute?.("data-testid")||""} ${p.getAttribute?.("aria-label")||""}`;meta=meta.toLowerCase();const rect=n.getBoundingClientRect(),style=getComputedStyle(n);let incoming=true;if(/outgoing|sent|self|mine|own|from-me|message--right|justify-end|items-end/.test(meta)||style.alignSelf==="flex-end")incoming=false;else if(/incoming|received|other|from-them|message--left|justify-start|items-start/.test(meta)||style.alignSelf==="flex-start")incoming=true;else incoming=(rect.left+rect.width/2)<innerWidth/2;return{id:n.getAttribute("data-message-id")||n.getAttribute("data-id")||"",sender:n.getAttribute("data-sender")||n.querySelector('[data-sender],[class*="sender" i],[class*="author" i]')?.textContent?.trim()||"",text,timestamp,incoming};}).filter(x=>x.text&&x.text.length<4000)},selector);
   await scrollRelevant(page,selector,"bottom");await page.waitForTimeout(700);
   let merged=await read(),unchanged=0,reachedTop=false;
   const token=x=>`${x.id||""}|${x.incoming?"in":"out"}|${x.sender}|${x.timestamp}|${x.text}`;
@@ -50,9 +55,7 @@ async function messages(page,url,fullHistory=false){
     if(pos.top<=2){if(reachedTop&&unchanged>=4)break;reachedTop=true;await page.waitForTimeout(700);}
   }
   if(fullHistory&&!reachedTop)throw Error("Full message scan did not reach the beginning of the conversation");
-  const occurrencesFromEnd=new Map(),stableIds=new Array(merged.length);
-  for(let i=merged.length-1;i>=0;i--){const x=merged[i],canonical=`${x.incoming?"in":"out"}|${x.sender}|${x.timestamp}|${x.text}`,occurrenceFromEnd=(occurrencesFromEnd.get(canonical)||0)+1;occurrencesFromEnd.set(canonical,occurrenceFromEnd);stableIds[i]=x.id||crypto.createHash("sha256").update(`${url}|${canonical}|from-end-${occurrenceFromEnd}`).digest("hex").slice(0,32)}
-  const seen=new Set(),out=[];for(let i=0;i<merged.length;i++){const x=merged[i],stable=stableIds[i];if(seen.has(stable))continue;seen.add(stable);out.push({...x,id:stable,conversationId:url})}return out;
+  return deduplicateMessages(url,merged);
 }
 async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=count-1;i>=0;i--){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
 async function waitVisible(page,selectors,timeout=20000){const end=Date.now()+timeout;do{const found=await visible(page,selectors);if(found)return found;await page.waitForTimeout(250)}while(Date.now()<end);return null}
@@ -63,11 +66,13 @@ async function send(page,url,text){
   const fieldSelectors=['textarea[name*="message" i]','textarea[placeholder*="mensagem" i]','textarea[placeholder*="message" i]','input[name*="message" i]','input[placeholder*="mensagem" i]','input[placeholder*="message" i]','[contenteditable="true"][role="textbox"]','textarea','[role="textbox"]','input[type="text"]'];
   const contactSelectors=['button:has-text("Enviar mensagem")','a:has-text("Enviar mensagem")','button:has-text("Mensagem")','a:has-text("Mensagem")','button:has-text("Contactar")','a:has-text("Contactar")','[data-testid*="contact" i]','[data-testid*="message" i]','a[href*="mensag" i]','a[href*="chat" i]'];
   const submitSelectors=['button[type="submit"]:not([disabled])','button:has-text("Enviar"):not([disabled])','button[aria-label*="enviar" i]:not([disabled])','button[title*="enviar" i]:not([disabled])','[role="button"][aria-label*="enviar" i]','[data-testid*="send" i]:not([disabled])'];
-  const normalized=text.trim().replace(/\s+/g," ");
+  const normalized=cleanText(text);
   const messageSelector='article,[data-message-id],[data-testid*="message" i],[class*="message" i],[class*="bubble" i]';
   const appearsInConversation=()=>page.locator(messageSelector).evaluateAll((nodes,expected)=>nodes.some(n=>{
     const r=n.getBoundingClientRect(),style=getComputedStyle(n),actual=(n.innerText||n.textContent||"").trim().replace(/\s+/g," ");
-    return r.width>20&&r.height>10&&style.display!=="none"&&style.visibility!=="hidden"&&actual.includes(expected);
+    const meta=`${n.className||""} ${n.getAttribute?.("data-direction")||""} ${n.getAttribute?.("data-testid")||""} ${n.getAttribute?.("aria-label")||""}`.toLowerCase();
+    const outgoing=/outgoing|sent|self|mine|own|from-me|message--right|justify-end|items-end/.test(meta)||style.alignSelf==="flex-end"||(r.left+r.width/2)>=innerWidth/2;
+    return outgoing&&r.width>20&&r.height>10&&style.display!=="none"&&style.visibility!=="hidden"&&actual===expected;
   }),normalized).catch(()=>false);
   const nativeClick=async locator=>{
     await locator.evaluate(el=>{
@@ -140,52 +145,15 @@ async function send(page,url,text){
   let proof=response&&response.status()>=200&&response.status()<300?"network":"";
   if(response&&response.status()===423){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
-    // CustoJusto uses 423 as a temporary conversation lock. Back off instead
-    // of hammering the same chat; the progressively longer waits also avoid
-    // turning a transient lock into an anti-spam lock.
-    const lockBackoff=[15000,30000,60000,120000];
-    for(let retry=0;retry<lockBackoff.length&&!proof;retry++){
-      await page.waitForTimeout(lockBackoff[retry]);
-      await page.goto(new URL("/mensagens",new URL(url).origin).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
-      await cookies(page);
-      await page.waitForTimeout(1500);
-      await page.goto(url,{waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
-      await cookies(page);
-      await page.waitForTimeout(1500);
+    // A 423 can be ambiguous: the UI may have accepted the message while the
+    // endpoint reports a lock. Never click Send a second time. Verify only.
+    for(const wait of [1500,3000,6000,12000]){
+      await page.waitForTimeout(wait);
+      await page.reload({waitUntil:"domcontentloaded",timeout:TIMEOUT}).catch(()=>{});
+      await cookies(page);await page.waitForTimeout(750);
       if(await appearsInConversation()){proof="conversation-after-423";break;}
-      field=await openComposer();
-      if(!field)continue;
-      await field.fill(text,{timeout:10000}).catch(async()=>{
-        const fresh=await openComposer();
-        if(!fresh)throw Error("CustoJusto composer disappeared during 423 retry");
-        field=fresh;
-        await field.fill(text,{timeout:10000});
-      });
-      const retryComposer=field.locator('xpath=ancestor::*[self::form or @role="dialog" or contains(@class,"message") or contains(@class,"contact")][1]');
-      let retrySubmit=null;
-      if(await retryComposer.count())retrySubmit=await visible(retryComposer,submitSelectors);
-      if(!retrySubmit)retrySubmit=await visible(page,submitSelectors);
-      if(!retrySubmit)continue;
-      const retryResponsePromise=page.waitForResponse(r=>{
-        if(!["POST","PUT","PATCH"].includes(r.request().method()))return false;
-        const data=r.request().postData()||"";
-        let decoded=data;try{decoded=decodeURIComponent(data.replace(/\+/g," "))}catch{}
-        return data.includes(text)||decoded.includes(text)||decoded.includes(text.trim());
-      },{timeout:20000}).catch(()=>null);
-      try{await nativeClick(retrySubmit)}catch{
-        const freshSubmit=await visible(page,submitSelectors);
-        if(!freshSubmit)continue;
-        await freshSubmit.click({timeout:5000,force:true});
-      }
-      response=await retryResponsePromise;
-      if(response&&response.status()>=200&&response.status()<300){proof="network-retry";break;}
-      if(response&&response.status()===423)continue;
-      if(response&&response.status()>=400){
-        const retryDetail=(await response.text().catch(()=>"")).slice(0,500);
-        const e=Error(`CustoJusto rejected retry with HTTP ${response.status()}${retryDetail?`: ${retryDetail}`:""}`);e.status=response.status();throw e;
-      }
     }
-    if(!proof){const e=Error(`CustoJusto chat remains temporarily locked after safe backoff (HTTP 423)${detail?`: ${detail}`:""}`);e.status=423;throw e;}
+    if(!proof){const e=Error(`CustoJusto delivery is unconfirmed after HTTP 423; message was not retried to prevent duplicates${detail?`: ${detail}`:""}`);e.status=423;throw e;}
   }else if(response&&response.status()>=400){
     const detail=(await response.text().catch(()=>"")).slice(0,500);
     const e=Error(`CustoJusto rejected the message with HTTP ${response.status()}${detail?`: ${detail}`:""}`);
