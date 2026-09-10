@@ -16,7 +16,7 @@ async function exclusive(s,work){const previous=s.queue.catch(()=>{});let releas
 async function cookies(page){for(const q of ["#CybotCookiebotDialogBodyButtonDecline","#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll","button:has-text('Aceitar e fechar')"]){const b=page.locator(q).first();if(await b.isVisible().catch(()=>false)){await b.click().catch(()=>{});return}}}
 async function logged(page){if(/\/login|\/entrar|signin/i.test(page.url()))return false;if(await page.locator('a[href*="login"],a[href*="entrar"],button:has-text("Entrar")').first().isVisible().catch(()=>false))return false;return(await page.locator('a[href*="conta"],a[href*="account"],a[href*="mensagens"],a[href*="messages"]').count())>0}
 async function use(req,res,fn){try{const s=await session(req.body?.accountId);await exclusive(s,()=>fn(s.page,base(req.body?.baseUrl)))}catch(e){if(!res.headersSent)res.status(Number(e.status)||500).json({error:e.message,status:Number(e.status)||500})}}
-async function scrollRelevant(page,selector,direction){return page.evaluate(({selector,direction})=>{const nodes=[...document.querySelectorAll(selector)];const scored=new Map();for(const n of nodes)for(let p=n.parentElement;p;p=p.parentElement){const st=getComputedStyle(p);if(p.scrollHeight>p.clientHeight+20&&/(auto|scroll)/.test(st.overflowY))scored.set(p,(scored.get(p)||0)+1)}const sc=[...scored].sort((a,b)=>b[1]-a[1]||b[0].clientHeight-a[0].clientHeight)[0]?.[0]||document.scrollingElement;const max=Math.max(0,sc.scrollHeight-sc.clientHeight),before=sc.scrollTop,step=Math.max(250,sc.clientHeight*.65);sc.scrollTop=direction==="bottom"?max:Math.max(0,before-step);if(sc===document.scrollingElement)window.scrollTo(0,direction==="bottom"?document.body.scrollHeight:0);return{before,top:sc.scrollTop,max}} ,{selector,direction})}
+async function scrollRelevant(page,selector,direction){return page.evaluate(({selector,direction})=>{const nodes=[...document.querySelectorAll(selector)];const scored=new Map();for(const n of nodes)for(let p=n.parentElement;p;p=p.parentElement){const st=getComputedStyle(p);if(p.scrollHeight>p.clientHeight+20&&/(auto|scroll)/.test(st.overflowY))scored.set(p,(scored.get(p)||0)+1)}const sc=[...scored].sort((a,b)=>b[1]-a[1]||b[0].clientHeight-a[0].clientHeight)[0]?.[0]||document.scrollingElement;const max=Math.max(0,sc.scrollHeight-sc.clientHeight),before=sc.scrollTop,step=Math.max(250,sc.clientHeight*.65);sc.scrollTop=direction==="bottom"?max:direction==="down"?Math.min(max,before+step):Math.max(0,before-step);if(sc===document.scrollingElement)window.scrollTo(0,direction==="bottom"?document.body.scrollHeight:direction==="down"?sc.scrollTop:0);return{before,top:sc.scrollTop,max}} ,{selector,direction})}
 async function conversations(page,b,fullScan=false){
   await page.goto(new URL("/mensagens",b).toString(),{waitUntil:"domcontentloaded",timeout:TIMEOUT});
   await cookies(page);await page.waitForTimeout(1500);
@@ -30,7 +30,7 @@ async function conversations(page,b,fullScan=false){
       return{id:n.getAttribute("data-conversation-id")||n.getAttribute("data-chat-id")||n.getAttribute("data-id")||`conversation-${i}`,url:u.toString(),title:text||"Диалог",index:i};
     }).filter(Boolean),b);
     const before=found.size;for(const row of rows)found.set(row.url,{...row,pass});unchanged=found.size===before?unchanged+1:0;
-    const moved=fullScan?await scrollRelevant(page,selector,"bottom"):{top:0,max:0};
+    const moved=fullScan?await scrollRelevant(page,selector,"down"):{top:0,max:0};
     if(fullScan){await page.waitForTimeout(500);if(moved.top>=moved.max-2){reachedBottom=true;if(unchanged>=6)break;}}
   }
   if(fullScan&&!reachedBottom)throw Error("Full conversation scan did not reach the end of the account list");
@@ -50,9 +50,9 @@ async function messages(page,url,fullHistory=false){
     if(pos.top<=2){if(reachedTop&&unchanged>=4)break;reachedTop=true;await page.waitForTimeout(700);}
   }
   if(fullHistory&&!reachedTop)throw Error("Full message scan did not reach the beginning of the conversation");
-  const occurrences=new Map(),seen=new Set(),out=[];
-  for(const x of merged){const canonical=`${x.incoming?"in":"out"}|${x.sender}|${x.timestamp}|${x.text}`,occurrence=(occurrences.get(canonical)||0)+1;occurrences.set(canonical,occurrence);const stable=x.id||crypto.createHash("sha256").update(`${url}|${canonical}|${occurrence}`).digest("hex").slice(0,32);if(seen.has(stable))continue;seen.add(stable);out.push({...x,id:stable,conversationId:url});}
-  return out;
+  const occurrencesFromEnd=new Map(),stableIds=new Array(merged.length);
+  for(let i=merged.length-1;i>=0;i--){const x=merged[i],canonical=`${x.incoming?"in":"out"}|${x.sender}|${x.timestamp}|${x.text}`,occurrenceFromEnd=(occurrencesFromEnd.get(canonical)||0)+1;occurrencesFromEnd.set(canonical,occurrenceFromEnd);stableIds[i]=x.id||crypto.createHash("sha256").update(`${url}|${canonical}|from-end-${occurrenceFromEnd}`).digest("hex").slice(0,32)}
+  const seen=new Set(),out=[];for(let i=0;i<merged.length;i++){const x=merged[i],stable=stableIds[i];if(seen.has(stable))continue;seen.add(stable);out.push({...x,id:stable,conversationId:url})}return out;
 }
 async function visible(page,selectors){for(const q of selectors){const all=page.locator(q);const count=await all.count();for(let i=count-1;i>=0;i--){const x=all.nth(i);if(await x.isVisible().catch(()=>false))return x}}return null}
 async function waitVisible(page,selectors,timeout=20000){const end=Date.now()+timeout;do{const found=await visible(page,selectors);if(found)return found;await page.waitForTimeout(250)}while(Date.now()<end);return null}
