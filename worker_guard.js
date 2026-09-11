@@ -48,16 +48,6 @@ app.use(async(req,res)=>{
     validate(req);
     if(req.method==="GET"&&req.path==="/health")return res.json({ok:true,guard:true});
     if(req.path==="/listing")return res.json(await listing(req.body||{}));
-    // Safe diagnostic mode: verify an existing message through the read-only
-    // /messages endpoint. Never forward verifyOnly requests to /send.
-    if(req.method==="POST"&&req.path==="/send"&&req.body?.verifyOnly===true){
-      const upstream=await fetch(`http://127.0.0.1:${UPSTREAM_PORT}/messages`,{method:"POST",headers:{"content-type":"application/json","x-worker-secret":String(req.headers["x-worker-secret"]||"")},body:JSON.stringify({accountId:req.body.accountId,conversationUrl:req.body.conversationUrl,fullHistory:false})});
-      const payload=await upstream.json().catch(()=>null);
-      if(!upstream.ok)return res.status(upstream.status).json(payload||{error:"Read-only message verification failed."});
-      const expected=String(req.body.text||"").trim().replace(/\s+/g," ");
-      const found=Array.isArray(payload)&&expected.length>0&&payload.some(message=>String(message?.text||"").trim().replace(/\s+/g," ").includes(expected));
-      return res.json({ok:found,verified:true,proof:found?"conversation-before-send":"not-found",url:req.body.conversationUrl});
-    }
     const headers={};if(req.headers["x-worker-secret"])headers["x-worker-secret"]=String(req.headers["x-worker-secret"]);if(req.method!=="GET"&&req.method!=="HEAD")headers["content-type"]="application/json";
     const upstream=await fetch(`http://127.0.0.1:${UPSTREAM_PORT}${req.originalUrl}`,{method:req.method,headers,redirect:"manual",body:req.method==="GET"||req.method==="HEAD"?undefined:JSON.stringify(req.body||{})});
     if([301,302,303,307,308].includes(upstream.status)){const location=upstream.headers.get("location");if(!location)throw new Error("Upstream redirect has no location.");const target=new URL(location,`http://127.0.0.1:${UPSTREAM_PORT}`);if(target.hostname!=="127.0.0.1"||Number(target.port||80)!==UPSTREAM_PORT)throw new Error("Unsafe upstream redirect blocked.");res.redirect(upstream.status,target.pathname+target.search);return;}

@@ -3,7 +3,7 @@ set -eu
 : "${BROWSER_WORKER_SHARED_SECRET:?BROWSER_WORKER_SHARED_SECRET is required}"
 : "${REMOTE_BROWSER_PASSWORD:?REMOTE_BROWSER_PASSWORD is required}"
 PORT="${PORT:-8080}"
-echo "WWWS release 2026.09.11-ai-hardening-r4 (safe verification harness)"
+echo "WWWS CustoJusto service starting"
 PIDS=""
 stop(){ [ -n "$PIDS" ] && kill $PIDS 2>/dev/null || true; wait 2>/dev/null || true; }
 terminate(){ trap - INT TERM EXIT; stop; exit 0; }
@@ -31,20 +31,12 @@ node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).c
 node /app/gateway.js >/tmp/gateway.log 2>&1 & GATEWAY_PID=$!; PIDS="$PIDS $GATEWAY_PID"
 sleep 1
 node -e 'fetch("http://127.0.0.1:"+(process.env.PORT||"8080")+"/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || { cat /tmp/gateway.log >&2; exit 1; }
-if [ "${WWWS_RUN_SAFE_TESTS:-0}" = "1" ]; then
-  echo "Running WWWS safe tests (no seller sends)..."
-  if ! node --no-warnings /app/safe_self_test.js >/tmp/safe-self-test.log 2>&1; then
-    cat /tmp/safe-self-test.log >&2
-    exit 1
-  fi
-  cat /tmp/safe-self-test.log
-fi
 /app/tg_bot >/tmp/tg-bot.log 2>&1 & BOT_PID=$!; PIDS="$PIDS $BOT_PID"
 while :; do
   for pid in $XVFB_PID $OPENBOX_PID $VNC_PID $WEBSOCKIFY_PID $WORKER_PID $GUARD_PID $GATEWAY_PID $BOT_PID; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "Required process $pid stopped; terminating service." >&2
-      cat /tmp/browser-worker.log /tmp/worker-guard.log /tmp/gateway.log /tmp/tg-bot.log /tmp/safe-self-test.log 2>/dev/null | tail -n 250 >&2 || true
+      cat /tmp/browser-worker.log /tmp/worker-guard.log /tmp/gateway.log /tmp/tg-bot.log 2>/dev/null | tail -n 250 >&2 || true
       exit 1
     fi
   done
