@@ -6,6 +6,7 @@ const { DatabaseSync } = require("node:sqlite");
 const WORKER = "http://127.0.0.1:3001";
 const SECRET = String(process.env.BROWSER_WORKER_SHARED_SECRET || "");
 const DB_PATH = String(process.env.DB_PATH || "/app/data/bot.sqlite3");
+const MANUAL_ACCOUNT_ID = String(process.env.CJ_MANUAL_ACCOUNT_ID || "").trim();
 const REQUEST_TIMEOUT_MS = 300000;
 
 function normalize(value) {
@@ -68,12 +69,25 @@ async function post(endpoint, body) {
     db.close();
   }
 
+  const databaseAccountIds = new Set(accounts.map((account) => Number(account.id)));
+  const sessionTargets = accounts.map((account) => ({ ...account, manualConfigured: String(account.id) === MANUAL_ACCOUNT_ID }));
+  if (/^[1-9]\d{0,15}$/.test(MANUAL_ACCOUNT_ID)) {
+    const manualAccountId = Number(MANUAL_ACCOUNT_ID);
+    if (Number.isSafeInteger(manualAccountId) && !databaseAccountIds.has(manualAccountId)) {
+      sessionTargets.push({
+        id: manualAccountId,
+        login_url: "https://www.custojusto.pt",
+        manualConfigured: true,
+      });
+    }
+  }
+
   const sessions = new Map();
   const sessionErrors = [];
   const results = [];
   let requestFailures = 0;
 
-  for (const account of accounts) {
+  for (const account of sessionTargets) {
     const accountId = Number(account.id);
     try {
       const status = await post("/status", { accountId, baseUrl: custoJustoOrigin(account.login_url) });
@@ -163,7 +177,12 @@ async function post(endpoint, body) {
     }
   }
 
-  const sessionSummary = [...sessions.entries()].map(([accountId, loggedIn]) => ({ accountId, loggedIn }));
+  const sessionSummary = [...sessions.entries()].map(([accountId, loggedIn]) => ({
+    accountId,
+    loggedIn,
+    inDatabase: databaseAccountIds.has(accountId),
+    manualConfigured: String(accountId) === MANUAL_ACCOUNT_ID,
+  }));
   const summary = {
     ok: requestFailures === 0 && sessionSummary.every((item) => item.loggedIn),
     mode: "status-and-messages-only",
