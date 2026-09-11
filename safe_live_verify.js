@@ -47,8 +47,15 @@ async function post(endpoint, body) {
   if (!SECRET) throw new Error("worker_secret_missing");
 
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
+  let accounts;
   let drafts;
   try {
+    accounts = db.prepare(`
+      SELECT id, login_url
+      FROM custojusto_accounts
+      ORDER BY id ASC
+      LIMIT 50
+    `).all();
     drafts = db.prepare(`
       SELECT d.id, d.account_id, COALESCE(d.conversation_id, 0) AS conversation_id,
              d.target_url, d.text, d.status, a.login_url
@@ -62,8 +69,24 @@ async function post(endpoint, body) {
   }
 
   const sessions = new Map();
+  const sessionErrors = [];
   const results = [];
   let requestFailures = 0;
+
+  for (const account of accounts) {
+    const accountId = Number(account.id);
+    try {
+      const status = await post("/status", { accountId, baseUrl: custoJustoOrigin(account.login_url) });
+      sessions.set(accountId, Boolean(status && status.loggedIn));
+    } catch (error) {
+      sessions.set(accountId, false);
+      requestFailures += 1;
+      sessionErrors.push({
+        accountId,
+        error: String(error.code || error.message || "status_failed"),
+      });
+    }
+  }
 
   for (const draft of drafts) {
     const accountId = Number(draft.account_id);
@@ -149,6 +172,7 @@ async function post(endpoint, body) {
     draftCount: drafts.length,
     requestFailures,
     sessions: sessionSummary,
+    sessionErrors,
     results,
   };
   console.log(`[safe-live-verify] ${JSON.stringify(summary)}`);
