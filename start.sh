@@ -31,12 +31,17 @@ node -e 'fetch("http://127.0.0.1:3001/health").then(r=>process.exit(r.ok?0:1)).c
 node /app/gateway.js >/tmp/gateway.log 2>&1 & GATEWAY_PID=$!; PIDS="$PIDS $GATEWAY_PID"
 sleep 1
 node -e 'fetch("http://127.0.0.1:"+(process.env.PORT||"8080")+"/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || { cat /tmp/gateway.log >&2; exit 1; }
+if [ "${WWWS_RUN_LIVE_VERIFY:-0}" = "1" ]; then
+  echo "Running one-time CustoJusto read-only verification (no seller sends)..."
+  node --no-warnings /app/safe_live_verify.js >/tmp/safe-live-verify.log 2>&1 || true
+  cat /tmp/safe-live-verify.log
+fi
 /app/tg_bot >/tmp/tg-bot.log 2>&1 & BOT_PID=$!; PIDS="$PIDS $BOT_PID"
 while :; do
   for pid in $XVFB_PID $OPENBOX_PID $VNC_PID $WEBSOCKIFY_PID $WORKER_PID $GUARD_PID $GATEWAY_PID $BOT_PID; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "Required process $pid stopped; terminating service." >&2
-      cat /tmp/browser-worker.log /tmp/worker-guard.log /tmp/gateway.log /tmp/tg-bot.log 2>/dev/null | tail -n 250 >&2 || true
+      cat /tmp/browser-worker.log /tmp/worker-guard.log /tmp/gateway.log /tmp/tg-bot.log /tmp/safe-live-verify.log 2>/dev/null | tail -n 250 >&2 || true
       exit 1
     fi
   done

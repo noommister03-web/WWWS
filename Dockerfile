@@ -33,11 +33,12 @@ WORKDIR /app
 COPY --from=worker-deps /worker/node_modules /app/node_modules
 COPY --from=worker-deps /ms-playwright /ms-playwright
 COPY --from=builder /app/build/tg_bot /app/tg_bot
-COPY browser_worker.js worker_guard.js gateway.js manual_browser.js package.json start.sh ./
+COPY browser_worker.js worker_guard.js gateway.js manual_browser.js safe_live_verify.js package.json start.sh ./
 RUN node --check /app/browser_worker.js \
     && node --check /app/worker_guard.js \
     && node --check /app/gateway.js \
     && node --check /app/manual_browser.js \
+    && node --check /app/safe_live_verify.js \
     && mkdir -p /app/data/custojusto/profiles \
     && chmod +x /app/start.sh
 ENV DB_PATH=/app/data/bot.sqlite3
