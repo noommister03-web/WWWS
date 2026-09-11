@@ -3,14 +3,18 @@ set -eu
 : "${BROWSER_WORKER_SHARED_SECRET:?BROWSER_WORKER_SHARED_SECRET is required}"
 : "${REMOTE_BROWSER_PASSWORD:?REMOTE_BROWSER_PASSWORD is required}"
 PORT="${PORT:-8080}"
-echo "WWWS release 2026.09.11-r1 (AI hardening + guarded CustoJusto worker)"
+echo "WWWS release 2026.09.11-ai-hardening-r3 (parser + stale-lock recovery)"
 PIDS=""
 stop(){ [ -n "$PIDS" ] && kill $PIDS 2>/dev/null || true; wait 2>/dev/null || true; }
 terminate(){ trap - INT TERM EXIT; stop; exit 0; }
 trap terminate INT TERM
 trap stop EXIT
 export DISPLAY=:99
-mkdir -p /tmp/.X11-unix /app/data/custojusto/profiles
+PROFILE_ROOT="${CJ_PROFILE_ROOT:-/app/data/custojusto/profiles}"
+mkdir -p /tmp/.X11-unix "$PROFILE_ROOT"
+# Container replacement can leave Chromium singleton artifacts on the persistent volume.
+# No Chromium process exists yet in this container, so remove only those ephemeral locks.
+find "$PROFILE_ROOT" -mindepth 1 -maxdepth 2 \( -name SingletonLock -o -name SingletonCookie -o -name SingletonSocket \) -exec rm -f -- {} +
 rm -f /tmp/.X99-lock
 Xvfb "$DISPLAY" -screen 0 1365x900x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & XVFB_PID=$!; PIDS="$XVFB_PID"
 for n in $(seq 1 20); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 1; done
