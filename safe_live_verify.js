@@ -54,7 +54,6 @@ async function post(endpoint, body) {
              d.target_url, d.text, d.status, a.login_url
       FROM custojusto_drafts AS d
       JOIN custojusto_accounts AS a ON a.id = d.account_id
-      WHERE d.status <> 'rejected'
       ORDER BY d.id ASC
       LIMIT 50
     `).all();
