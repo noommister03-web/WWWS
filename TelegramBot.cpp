@@ -57,6 +57,23 @@ SendStatus TelegramBot::sendSingleMessage(long long chatId,const std::string& te
 }
 SendStatus TelegramBot::sendMessage(long long chatId,const std::string& text){return text.empty()?SendStatus::PermanentFailure:sendSingleMessage(chatId,text);}
 SendStatus TelegramBot::sendMessageWithKeyboard(long long chatId,const std::string& text,const std::vector<std::vector<std::pair<std::string,std::string>>>& buttons){return text.empty()?SendStatus::PermanentFailure:sendSingleMessage(chatId,text,makeKeyboardJson(buttons));}
+
+bool TelegramBot::editSingleMessage(long long chatId,long long messageId,const std::string& text,const std::string& replyMarkup){
+    if(chatId==0||messageId<=0||text.empty())return false;
+    std::lock_guard<std::mutex> lock(sendMutex_);
+    const std::string safeText=limitUtf8(text,4096);
+    const std::string keyboard=replyMarkup.empty()?json({{"inline_keyboard",json::array()}}).dump():replyMarkup;
+    const std::string form="chat_id="+urlEncode(std::to_string(chatId))+"&message_id="+urlEncode(std::to_string(messageId))+"&text="+urlEncode(safeText)+"&reply_markup="+urlEncode(keyboard);
+    const auto response=postForm("editMessageText",form);
+    if(response.networkError)return false;
+    try{
+        const auto data=json::parse(response.body);
+        if(data.value("ok",false))return true;
+        return data.value("description",std::string()).find("message is not modified")!=std::string::npos;
+    }catch(...){return false;}
+}
+bool TelegramBot::editMessage(long long chatId,long long messageId,const std::string& text){return editSingleMessage(chatId,messageId,text);}
+bool TelegramBot::editMessageWithKeyboard(long long chatId,long long messageId,const std::string& text,const std::vector<std::vector<std::pair<std::string,std::string>>>& buttons){return editSingleMessage(chatId,messageId,text,makeKeyboardJson(buttons));}
 bool TelegramBot::answerCallbackQuery(const std::string& id){if(id.empty())return false;const auto response=postForm("answerCallbackQuery","callback_query_id="+urlEncode(id));if(response.networkError)return false;try{return json::parse(response.body).value("ok",false);}catch(...){return false;}}
 
 void TelegramBot::periodicLoop(){
@@ -83,7 +100,10 @@ void TelegramBot::run(){
                 if(update.contains("callback_query")&&update["callback_query"].is_object()){
                     const auto& callback=update["callback_query"];CallbackQuery incoming;incoming.updateId=updateId;incoming.id=callback.value("id","");incoming.data=callback.value("data","");
                     if(callback.contains("from")){incoming.senderId=callback["from"].value("id",0LL);incoming.username=callback["from"].value("username","");}
-                    if(callback.contains("message")&&callback["message"].contains("chat"))incoming.chatId=callback["message"]["chat"].value("id",0LL);
+                    if(callback.contains("message")&&callback["message"].is_object()){
+                        incoming.messageId=callback["message"].value("message_id",0LL);
+                        if(callback["message"].contains("chat"))incoming.chatId=callback["message"]["chat"].value("id",0LL);
+                    }
                     answerCallbackQuery(incoming.id);if(callbackHandler_&&!callbackHandler_(incoming))std::cerr<<"Callback handler returned false for update "<<updateId<<'\n';continue;
                 }
                 if(!update.contains("message")||!update["message"].is_object())continue;const auto& message=update["message"];

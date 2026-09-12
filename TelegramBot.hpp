@@ -21,6 +21,7 @@ struct CallbackQuery {
     long long updateId = 0;
     std::string id;
     long long chatId = 0;
+    long long messageId = 0;
     long long senderId = 0;
     std::string username;
     std::string data;
@@ -47,6 +48,8 @@ public:
     void stop();
     SendStatus sendMessage(long long chatId, const std::string& text);
     SendStatus sendMessageWithKeyboard(long long chatId, const std::string& text, const std::vector<std::vector<std::pair<std::string,std::string>>>& buttons);
+    bool editMessage(long long chatId, long long messageId, const std::string& text);
+    bool editMessageWithKeyboard(long long chatId, long long messageId, const std::string& text, const std::vector<std::vector<std::pair<std::string,std::string>>>& buttons);
     bool answerCallbackQuery(const std::string& callbackQueryId);
 
 private:
@@ -71,6 +74,7 @@ private:
     bool stopRequested() const;
     void periodicLoop();
     SendStatus sendSingleMessage(long long chatId,const std::string& text,const std::string& replyMarkup="");
+    bool editSingleMessage(long long chatId,long long messageId,const std::string& text,const std::string& replyMarkup="");
     static std::string urlEncode(const std::string& value);
     static std::string limitUtf8(const std::string& text,std::size_t maxBytes);
     static std::string makeKeyboardJson(const std::vector<std::vector<std::pair<std::string,std::string>>>& buttons);

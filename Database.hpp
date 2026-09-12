@@ -183,6 +183,7 @@ public:
     long long createCustoJustoDraft(long long accountId, long long conversationId, const std::string& targetUrl, const std::string& text, const std::string& incomingText = "", const std::string& translatedIncoming = "", const std::string& sourceExternalMessageId = "");
     bool hasCustoJustoDraftForSource(long long accountId, long long conversationId, const std::string& sourceExternalMessageId);
     std::optional<CustoJustoDraftRecord> getCustoJustoDraft(long long id);
+    std::optional<CustoJustoDraftRecord> getPendingCustoJustoDraftForConversation(long long conversationId);
     bool updateCustoJustoDraftText(long long id, const std::string& text);
     bool setCustoJustoDraftStatus(long long id, const std::string& status);
     bool claimCustoJustoDraftForSending(long long id);
