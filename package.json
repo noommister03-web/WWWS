@@ -5,7 +5,7 @@
   "main": "browser_worker.js",
   "scripts": {
     "start": "node browser_worker.js",
-    "check": "node --check browser_worker.js && node --check gateway.js"
+    "check": "node --check browser_worker.js && node --check worker_guard.js && node --check gateway.js && node --check manual_browser.js"
   },
   "dependencies": {
     "express": "4.21.2",
